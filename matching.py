@@ -113,14 +113,18 @@ def extract_entities_from_sentence(tokens, patterns: Sequence[Pattern]) -> List[
             spans = match_pattern(tokens, i, pattern)
             if spans:
                 parts_json = {}
+                char_spans = []
                 for idx, (s, e) in enumerate(spans, start=1):
-                    parts_json[f"part{idx}"] = [assemble_token_info(k, tokens) for k in range(s, e)]
+                    part_tokens = [assemble_token_info(k, tokens) for k in range(s, e)]
+                    parts_json[f"part{idx}"] = part_tokens
+                    char_spans.append((part_tokens[0]["start_char"], part_tokens[-1]["end_char"]))
                     for k in range(s, e):
                         used[k] = True
 
                 results.append({
                     "surface": pattern_surface(pattern),
                     "parts": parts_json,
+                    "spans": char_spans,
                 })
                 break
 

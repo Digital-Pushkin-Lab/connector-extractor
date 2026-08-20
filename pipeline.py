@@ -41,20 +41,23 @@ def parse_sentences(text: str, nlp) -> Tuple[List[tuple], int]:
     """Split `text` into sentences and parse each with stanza once.
 
     Returns:
-        parsed_sentences: list of (sentence_text, tokens) tuples, reusable
-            across any number of independent matching passes.
+        parsed_sentences: list of (sentence_text, tokens, sentence_start)
+            tuples, reusable across any number of independent matching
+            passes. `sentence_start` is the sentence's character offset in
+            `text`, needed to turn a token's sentence-relative start_char/
+            end_char into an absolute offset (see `extract_spans`).
         word_count: number of non-punctuation tokens in `text`, used to
             normalize the "per 100 words" metrics.
     """
-    sentences = [s.text for s in sentenize(text)]
+    sentence_substrings = list(sentenize(text))
     parsed_sentences = []
     word_count = 0
 
-    for sentence_text in sentences:
-        parsed = nlp(sentence_text)
+    for sub in sentence_substrings:
+        parsed = nlp(sub.text)
         doc_sentence = parsed.sentences[0]
         word_count += sum(1 for t in doc_sentence.tokens if t.to_dict()[0]["upos"] != "PUNCT")
-        parsed_sentences.append((doc_sentence.text, doc_sentence.tokens))
+        parsed_sentences.append((doc_sentence.text, doc_sentence.tokens, sub.start))
 
     return parsed_sentences, word_count
 
@@ -63,10 +66,46 @@ def analyze_parsed(parsed_sentences: List[tuple], checker, patterns: Sequence[Pa
     """Run one independent match+score pass of `patterns` over sentences
     already parsed by `parse_sentences`."""
     sentence_results = []
-    for sentence_text, tokens in parsed_sentences:
+    for sentence_text, tokens, _sentence_start in parsed_sentences:
         sentence_json = sentence_to_json(sentence_text, tokens, patterns)
         sentence_results.append(checker.score_sentence(sentence_json))
     return sentence_results
+
+
+def extract_spans(
+    parsed_sentences: List[tuple],
+    checker,
+    patterns_by_type: dict,
+    threshold: float = DEFAULT_THRESHOLD,
+) -> List[dict]:
+    """Return character-offset spans for matches at/above `threshold`,
+    across sentences already parsed by `parse_sentences`.
+
+    `patterns_by_type` maps a type name (e.g. "linker"/"intro") to its
+    pattern list; each type is matched in its own independent pass, exactly
+    like `analyze_parsed`/`compute_stats`. A discontinuous connector like
+    "если ... то" yields one dict per part, all sharing the same `surface`.
+
+    Returns a list of {"start", "end", "surface", "type", "probability"}
+    dicts with offsets absolute within the original text.
+    """
+    results = []
+    for sentence_text, tokens, sentence_start in parsed_sentences:
+        for type_name, patterns in patterns_by_type.items():
+            sentence_json = sentence_to_json(sentence_text, tokens, patterns)
+            scored = checker.score_sentence(sentence_json)
+            for entity, score in zip(sentence_json["entities"], scored):
+                if score["probability"] < threshold:
+                    continue
+                for s, e in entity["spans"]:
+                    results.append({
+                        "start": sentence_start + s,
+                        "end": sentence_start + e,
+                        "surface": entity["surface"],
+                        "type": type_name,
+                        "probability": score["probability"],
+                    })
+    return results
 
 
 def summarize_linkers(linker_sentence_results: List[list], threshold: float, word_count: int) -> dict:
