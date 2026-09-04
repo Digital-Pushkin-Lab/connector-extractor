@@ -85,15 +85,25 @@ def parse_args():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+
+    #ASamsonov делаем параметр необязательным для передачи в командной строке. В случае его отсутствия он задаётся, как both
+    # parser.add_argument(
+    #     "--mode", choices=["linkers", "intro", "both"], required=True,
+    #     help="Which kind of entity to extract from the text.",
+    # )
+    # input_group = parser.add_mutually_exclusive_group(required=True)
+    # input_group.add_argument("--text", help="Raw text to analyze.")
+    # input_group.add_argument("--input-file", help="Path to a plain text file to analyze.")
+    # input_group.add_argument("--input-csv", help="Path to a CSV file with a text column to analyze in batch.")
     parser.add_argument(
-        "--mode", choices=["linkers", "intro", "both"], required=True,
+        "--mode", choices=["linkers", "intro", "both"], default="both",
         help="Which kind of entity to extract from the text.",
     )
-
-    input_group = parser.add_mutually_exclusive_group(required=True)
-    input_group.add_argument("--text", help="Raw text to analyze.")
-    input_group.add_argument("--input-file", help="Path to a plain text file to analyze.")
-    input_group.add_argument("--input-csv", help="Path to a CSV file with a text column to analyze in batch.")
+    input_group = parser.add_mutually_exclusive_group(required=False)
+    input_group.add_argument("--text", help="Raw text to analyze.", default=None)
+    input_group.add_argument("--input-file", help="Path to a plain text file to analyze.", default=None)
+    input_group.add_argument("--input-csv", help="Path to a CSV file with a text column to analyze in batch.", default=None)    
+    #ASamsonov
 
     parser.add_argument(
         "--text-column", default="text",
@@ -114,6 +124,13 @@ def parse_args():
     return parser.parse_args()
 
 
+#AS функция возвращает расширение (добавлена для удобства и локаничности кода)
+def get_ext(file_name):
+    p = Path(file_name)
+    ext = p.suffix          # с точкой, например '.csv'
+    return ext
+#AS
+
 def run_single(text, mode, patterns_by_type, nlp, checker, threshold, output_path):
     parsed_sentences, word_count = parse_sentences(text, nlp)
     stats = compute_stats(mode, parsed_sentences, patterns_by_type, checker, threshold, word_count)
@@ -127,9 +144,25 @@ def run_single(text, mode, patterns_by_type, nlp, checker, threshold, output_pat
 
 
 def run_batch(input_csv, text_column, output_path, mode, patterns_by_type, nlp, checker, threshold):
-    df = pd.read_csv(input_csv)
+
+
+    
+    #AS вместо простого чтения файла с запятыми проверим расширение и поделим по запятым именно .csv
+    #df = pd.read_csv(input_csv) 
+    if get_ext(input_csv) =='.csv':
+        df = pd.read_csv(input_csv) # 'этот вариант был и остаётся
+    else:
+        df = pd.read_csv(input_csv, sep='\t') # tsv или txt будем делить на колонки по табуляциям
+    #AS
+
 
     rows = []
+
+    #AS если колонка не задана, возьмём первую. Это даст возможность читать текстовые файлы списком
+    if not text_column or text_column not in df.columns:
+        text_column = df.columns[0]
+    #AS
+
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Analyzing"):
         text = str(row[text_column]) if pd.notna(row[text_column]) else ""
         parsed_sentences, word_count = parse_sentences(text, nlp)
@@ -137,9 +170,27 @@ def run_batch(input_csv, text_column, output_path, mode, patterns_by_type, nlp, 
 
     stats_df = pd.DataFrame(rows)
     result_df = pd.concat([df.reset_index(drop=True), stats_df], axis=1)
-    result_df.to_csv(output_path, index=False)
+    
+    #AS запятыми поделим тольк именно .csv
+    #result_df.to_csv(output_path, index=False) #так было
+    if get_ext(output_path)=='.csv':
+        result_df.to_csv(output_path, index=False) #так было и остаётся
+    else:
+        result_df.to_csv(output_path, index=False, sep='\t') #файлы со всеми другими расширениями, например с tsv поделим табуляциями
+    #AS
+
+
     print(f"Wrote {len(result_df)} rows to {output_path}")
 
+
+#AS выделим функцию для упрощения
+def run(args, patterns_by_type, nlp, checker):
+    if args.input_csv:
+        run_batch(args.input_csv, args.text_column, args.output, args.mode, patterns_by_type, nlp, checker, args.threshold)
+    else:
+        text = args.text if args.text is not None else Path(args.input_file).read_text(encoding="utf-8")
+        run_single(text, args.mode, patterns_by_type, nlp, checker, args.threshold, args.output)
+#AS
 
 def main():
     args = parse_args()
@@ -153,11 +204,9 @@ def main():
     nlp = stanza.Pipeline("ru", processors="tokenize,pos,lemma,depparse")
     checker = build_default_checker()
 
-    if args.input_csv:
-        run_batch(args.input_csv, args.text_column, args.output, args.mode, patterns_by_type, nlp, checker, args.threshold)
-    else:
-        text = args.text if args.text is not None else Path(args.input_file).read_text(encoding="utf-8")
-        run_single(text, args.mode, patterns_by_type, nlp, checker, args.threshold, args.output)
+    #AS код выбора способа парсинга перенесли в run для упрощения вызова парсинга извне
+    run(args, patterns_by_type, nlp, checker)
+    #AS
 
 
 if __name__ == "__main__":

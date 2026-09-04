@@ -45,6 +45,25 @@ def assemble_token_info(token_position: int, tokens) -> dict:
     if (token_position == len(tokens) - 1) or tokens[token_position + 1].to_dict()[0]["upos"] == "PUNCT":
         add_misc("SpaceAfter=No")
 
+   #AS --- зависимые ПОСЛЕ текущего токена для правил вроде «при этом» (пунктуацию не считаем) ---
+    this_id = basic_info_dict.get("id")
+    head_id = basic_info_dict.get("head", 0)
+
+    for j in range(token_position + 1, len(tokens)):
+        td = tokens[j].to_dict()[0]
+        if td.get("upos") == "PUNCT":
+            continue  # запятая после «как правило» и т.п. — не зависимое
+        if this_id is not None and td.get("head") == this_id:
+            add_misc("DependentAfter=Yes")
+            break
+
+    for j in range(token_position + 1, len(tokens)):
+        td = tokens[j].to_dict()[0]
+        if head_id and td.get("id") == head_id and td.get("upos") in {"NOUN", "PROPN"}:
+            add_misc("HeadIsFollowingNoun=Yes")
+            break
+    #AS
+
     return basic_info_dict
 
 
