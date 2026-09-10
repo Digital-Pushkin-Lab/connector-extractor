@@ -15,14 +15,72 @@ is the expensive step and is identical regardless of which patterns are
 matched against it.
 """
 
+from __future__ import annotations
+
 from decimal import ROUND_HALF_UP, Decimal
-from typing import List, Sequence, Tuple
+from pathlib import Path
+from typing import List, NamedTuple, Sequence, Tuple
 
 from razdel import sentenize
 
 from matching import Pattern, sentence_to_json
+from patterns import build_patterns_from_csv
 
 DEFAULT_THRESHOLD = 0.4
+
+DATA_DIR = Path(__file__).parent / "data"
+DEFAULT_LINKERS_CSV = DATA_DIR / "linkers.csv"
+DEFAULT_INTRO_CSV = DATA_DIR / "intro_words.csv"
+
+
+def load_patterns(mode: str = "both",
+                  linkers_csv: str = None,
+                  intro_csv: str = None) -> dict:
+    """Return {"linker": [...]} and/or {"intro": [...]} pattern lists, loaded
+    independently -- they are never merged into a shared list."""
+    linkers_csv = str(linkers_csv or DEFAULT_LINKERS_CSV)
+    intro_csv = str(intro_csv or DEFAULT_INTRO_CSV)
+    patterns_by_type = {}
+    if mode in ("linkers", "both"):
+        patterns_by_type["linker"] = build_patterns_from_csv(linkers_csv)
+    if mode in ("intro", "both"):
+        patterns_by_type["intro"] = build_patterns_from_csv(intro_csv)
+    return patterns_by_type
+
+
+class Engine(NamedTuple):
+    """Everything needed to run the extractor on a piece of text: the stanza
+    pipeline, the rule-based scorer and the pattern lists. Build it once
+    (stanza init is slow) and reuse it across texts."""
+    nlp: object
+    checker: object
+    patterns_by_type: dict
+
+
+def build_engine(mode: str = "both",
+                 linkers_csv: str = None,
+                 intro_csv: str = None,
+                 nlp=None) -> Engine:
+    """Construct the extractor engine. Downloads the stanza `ru` model on
+    first use if it is missing. Pass `nlp` to reuse an existing pipeline."""
+    from rules import build_default_checker
+
+    if nlp is None:
+        import stanza
+        processors = "tokenize,pos,lemma,depparse"
+        try:
+            nlp = stanza.Pipeline("ru", processors=processors,
+                                  download_method=None, logging_level="ERROR")
+        except Exception:
+            stanza.download("ru")
+            nlp = stanza.Pipeline("ru", processors=processors,
+                                  logging_level="ERROR")
+
+    return Engine(
+        nlp=nlp,
+        checker=build_default_checker(),
+        patterns_by_type=load_patterns(mode, linkers_csv, intro_csv),
+    )
 
 
 def round_half_up(value: float, ndigits: int = 1) -> float:
@@ -88,12 +146,7 @@ def extract_spans(
     for sentence_text, tokens, sentence_start in parsed_sentences:
         for type_name, patterns in patterns_by_type.items():
             sentence_json = sentence_to_json(sentence_text, tokens, patterns)
-
-            debug = sentence_text.startswith("Растения выделяют кислород")
-            if debug:
-                print(sentence_text)
-
-            scored = checker.score_sentence(sentence_json, debug)
+            scored = checker.score_sentence(sentence_json)
             for entity, score in zip(sentence_json["entities"], scored):
                 item = {
                     "start": None,          # заполним ниже
@@ -127,6 +180,47 @@ def extract_spans(
         return results, rejected
     return results
 
+
+def dedupe_spans(spans: List[dict]) -> List[dict]:
+    """Collapse exact-duplicate (start, end) matches -- e.g. a word that
+    matches both the linker and intro lists -- keeping whichever has the
+    higher scored probability. Order of first appearance is preserved."""
+    best: dict = {}
+    order: List[Tuple[int, int]] = []
+    for sp in spans:
+        pos = (sp["start"], sp["end"])
+        if pos not in best:
+            best[pos] = sp
+            order.append(pos)
+        elif sp["probability"] > best[pos]["probability"]:
+            best[pos] = sp
+    return [best[pos] for pos in order]
+
+
+def predict_spans(text: str,
+                  engine: "Engine",
+                  threshold: float = DEFAULT_THRESHOLD,
+                  with_rejected: bool = False):
+    """Run the full extractor on `text`: split + parse + match + score +
+    dedupe. Returns a list of span dicts
+    ({"start", "end", "surface", "type", "probability"}) with character
+    offsets absolute in `text`. With `with_rejected=True` returns
+    `(kept, rejected)`, where `rejected` holds sub-threshold near-misses."""
+    if not text or not text.strip():
+        return ([], []) if with_rejected else []
+
+    parsed_sentences, _ = parse_sentences(text, engine.nlp)
+    result = extract_spans(
+        parsed_sentences,
+        engine.checker,
+        engine.patterns_by_type,
+        threshold=threshold,
+        return_rejected=with_rejected,
+    )
+    if with_rejected:
+        kept, rejected = result
+        return dedupe_spans(kept), dedupe_spans(rejected)
+    return dedupe_spans(result)
 
 
 def summarize_linkers(linker_sentence_results: List[list], threshold: float, word_count: int) -> dict:

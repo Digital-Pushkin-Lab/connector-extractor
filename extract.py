@@ -31,34 +31,22 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-import stanza
 from tqdm import tqdm
 
-from patterns import build_patterns_from_csv
 from pipeline import (
+    DEFAULT_INTRO_CSV,
+    DEFAULT_LINKERS_CSV,
     DEFAULT_THRESHOLD,
     analyze_parsed,
+    build_engine,
     combine_stats,
+    load_patterns,  # re-exported for callers that still `from extract import load_patterns`
     parse_sentences,
     summarize_intro,
     summarize_linkers,
 )
-from rules import build_default_checker
-
-DATA_DIR = Path(__file__).parent / "data"
-DEFAULT_LINKERS_CSV = DATA_DIR / "linkers.csv"
-DEFAULT_INTRO_CSV = DATA_DIR / "intro_words.csv"
-
-
-def load_patterns(mode: str, linkers_csv: str, intro_csv: str) -> dict:
-    """Return {"linker": [...]} and/or {"intro": [...]} pattern lists,
-    loaded independently -- they are never merged into a shared list."""
-    patterns_by_type = {}
-    if mode in ("linkers", "both"):
-        patterns_by_type["linker"] = build_patterns_from_csv(linkers_csv)
-    if mode in ("intro", "both"):
-        patterns_by_type["intro"] = build_patterns_from_csv(intro_csv)
-    return patterns_by_type
+from rules import build_default_checker  # noqa: F401  (re-exported for test_patterns.py)
+from tables import read_table
 
 
 def compute_stats(mode: str, parsed_sentences, patterns_by_type: dict, checker, threshold: float, word_count: int) -> dict:
@@ -124,12 +112,10 @@ def parse_args():
     return parser.parse_args()
 
 
-#AS функция возвращает расширение (добавлена для удобства и локаничности кода)
 def get_ext(file_name):
-    p = Path(file_name)
-    ext = p.suffix          # с точкой, например '.csv'
-    return ext
-#AS
+    """Return a file's extension with the leading dot, e.g. '.csv'."""
+    return Path(file_name).suffix
+
 
 def run_single(text, mode, patterns_by_type, nlp, checker, threshold, output_path):
     parsed_sentences, word_count = parse_sentences(text, nlp)
@@ -144,24 +130,15 @@ def run_single(text, mode, patterns_by_type, nlp, checker, threshold, output_pat
 
 
 def run_batch(input_csv, text_column, output_path, mode, patterns_by_type, nlp, checker, threshold):
-
-
-    
-    #AS вместо простого чтения файла с запятыми проверим расширение и поделим по запятым именно .csv
-    #df = pd.read_csv(input_csv) 
-    if get_ext(input_csv) =='.csv':
-        df = pd.read_csv(input_csv) # 'этот вариант был и остаётся
-    else:
-        df = pd.read_csv(input_csv, sep='\t') # tsv или txt будем делить на колонки по табуляциям
-    #AS
-
+    # Reads .csv (comma) or .tsv/.txt/.xlsx (tab / sheet); see tables.read_table.
+    df = read_table(input_csv)
 
     rows = []
 
-    #AS если колонка не задана, возьмём первую. Это даст возможность читать текстовые файлы списком
+    # If the column is unset or missing, fall back to the first one so plain
+    # one-column text lists work too.
     if not text_column or text_column not in df.columns:
         text_column = df.columns[0]
-    #AS
 
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Analyzing"):
         text = str(row[text_column]) if pd.notna(row[text_column]) else ""
@@ -170,27 +147,22 @@ def run_batch(input_csv, text_column, output_path, mode, patterns_by_type, nlp, 
 
     stats_df = pd.DataFrame(rows)
     result_df = pd.concat([df.reset_index(drop=True), stats_df], axis=1)
-    
-    #AS запятыми поделим тольк именно .csv
-    #result_df.to_csv(output_path, index=False) #так было
-    if get_ext(output_path)=='.csv':
-        result_df.to_csv(output_path, index=False) #так было и остаётся
-    else:
-        result_df.to_csv(output_path, index=False, sep='\t') #файлы со всеми другими расширениями, например с tsv поделим табуляциями
-    #AS
 
+    # Comma only for a real .csv; everything else (e.g. .tsv) gets tabs.
+    sep = "," if get_ext(output_path) == ".csv" else "\t"
+    result_df.to_csv(output_path, index=False, sep=sep)
 
     print(f"Wrote {len(result_df)} rows to {output_path}")
 
 
-#AS выделим функцию для упрощения
 def run(args, patterns_by_type, nlp, checker):
+    """Dispatch to batch or single-text mode based on `args`."""
     if args.input_csv:
         run_batch(args.input_csv, args.text_column, args.output, args.mode, patterns_by_type, nlp, checker, args.threshold)
     else:
         text = args.text if args.text is not None else Path(args.input_file).read_text(encoding="utf-8")
         run_single(text, args.mode, patterns_by_type, nlp, checker, args.threshold, args.output)
-#AS
+
 
 def main():
     args = parse_args()
@@ -198,15 +170,10 @@ def main():
     if args.input_csv and not args.output:
         sys.exit("--output is required when using --input-csv")
 
-    patterns_by_type = load_patterns(args.mode, args.linkers_csv, args.intro_csv)
-
     print("Loading stanza pipeline (tokenize,pos,lemma,depparse)...", file=sys.stderr)
-    nlp = stanza.Pipeline("ru", processors="tokenize,pos,lemma,depparse")
-    checker = build_default_checker()
+    engine = build_engine(args.mode, args.linkers_csv, args.intro_csv)
 
-    #AS код выбора способа парсинга перенесли в run для упрощения вызова парсинга извне
-    run(args, patterns_by_type, nlp, checker)
-    #AS
+    run(args, engine.patterns_by_type, engine.nlp, engine.checker)
 
 
 if __name__ == "__main__":
