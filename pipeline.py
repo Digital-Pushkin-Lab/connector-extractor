@@ -55,9 +55,10 @@ def parse_sentences(text: str, nlp) -> Tuple[List[tuple], int]:
 
     for sub in sentence_substrings:
         parsed = nlp(sub.text)
-        doc_sentence = parsed.sentences[0]
-        word_count += sum(1 for t in doc_sentence.tokens if t.to_dict()[0]["upos"] != "PUNCT")
-        parsed_sentences.append((doc_sentence.text, doc_sentence.tokens, sub.start))
+        if parsed.sentences: # ASamsonov - проверяем на наличие предложения
+            doc_sentence = parsed.sentences[0]
+            word_count += sum(1 for t in doc_sentence.tokens if t.to_dict()[0]["upos"] != "PUNCT")
+            parsed_sentences.append((doc_sentence.text, doc_sentence.tokens, sub.start))
 
     return parsed_sentences, word_count
 
@@ -72,40 +73,60 @@ def analyze_parsed(parsed_sentences: List[tuple], checker, patterns: Sequence[Pa
     return sentence_results
 
 
+
 def extract_spans(
     parsed_sentences: List[tuple],
     checker,
     patterns_by_type: dict,
     threshold: float = DEFAULT_THRESHOLD,
-) -> List[dict]:
-    """Return character-offset spans for matches at/above `threshold`,
-    across sentences already parsed by `parse_sentences`.
-
-    `patterns_by_type` maps a type name (e.g. "linker"/"intro") to its
-    pattern list; each type is matched in its own independent pass, exactly
-    like `analyze_parsed`/`compute_stats`. A discontinuous connector like
-    "если ... то" yields one dict per part, all sharing the same `surface`.
-
-    Returns a list of {"start", "end", "surface", "type", "probability"}
-    dicts with offsets absolute within the original text.
-    """
+    return_rejected: bool = False,          # новый параметр
+) -> List[dict] | tuple[List[dict], List[dict]]:
     results = []
+    rejected = []
+
+
     for sentence_text, tokens, sentence_start in parsed_sentences:
         for type_name, patterns in patterns_by_type.items():
             sentence_json = sentence_to_json(sentence_text, tokens, patterns)
-            scored = checker.score_sentence(sentence_json)
+
+            debug = sentence_text.startswith("Растения выделяют кислород")
+            if debug:
+                print(sentence_text)
+
+            scored = checker.score_sentence(sentence_json, debug)
             for entity, score in zip(sentence_json["entities"], scored):
-                if score["probability"] < threshold:
-                    continue
+                item = {
+                    "start": None,          # заполним ниже
+                    "end": None,
+                    "surface": entity["surface"],
+                    "type": type_name,
+                    "probability": score["probability"],
+                }
+
+ 
+                # Приоритет intro над linker:
+                # если type_name == "intro", добавляем небольшой бонус к probability.
+                # Это поможет в спорных случаях, когда один и тот же фрагмент
+                # найден и как linker, и как intro: при равных или близких скорингах
+                # победит intro, что соответствует эталону (=linker=intro → intro).
+                if type_name == "intro":
+                    item["probability"] += 0.01
+                    
+                                   
                 for s, e in entity["spans"]:
-                    results.append({
-                        "start": sentence_start + s,
-                        "end": sentence_start + e,
-                        "surface": entity["surface"],
-                        "type": type_name,
-                        "probability": score["probability"],
-                    })
+                    span_item = item.copy()
+                    span_item["start"] = sentence_start + s
+                    span_item["end"] = sentence_start + e
+
+                    if score["probability"] < threshold:
+                        rejected.append(span_item)
+                    else:
+                        results.append(span_item)
+
+    if return_rejected:
+        return results, rejected
     return results
+
 
 
 def summarize_linkers(linker_sentence_results: List[list], threshold: float, word_count: int) -> dict:
