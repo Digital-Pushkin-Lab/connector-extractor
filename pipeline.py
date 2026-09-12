@@ -17,6 +17,7 @@ matched against it.
 
 from __future__ import annotations
 
+import uuid
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import List, NamedTuple, Sequence, Tuple
@@ -148,12 +149,17 @@ def extract_spans(
             sentence_json = sentence_to_json(sentence_text, tokens, patterns)
             scored = checker.score_sentence(sentence_json)
             for entity, score in zip(sentence_json["entities"], scored):
+                # Общий group_id для всех частей одного (возможно, разрывного)
+                # коннектора -- чтобы, например, "если" и "то" из "если...то"
+                # получили один и тот же id при отображении в gradio_app.
+                group_id = str(uuid.uuid4())[:8]
                 item = {
                     "start": None,          # заполним ниже
                     "end": None,
                     "surface": entity["surface"],
                     "type": type_name,
                     "probability": score["probability"],
+                    "group_id": group_id,
                 }
 
  
