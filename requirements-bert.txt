@@ -1,0 +1,6 @@
+# Дополнительно к requirements.txt — для --parser bert / bert-deps (см. bert_parser.py).
+# Проверено на Python 3.8 (conda activate py38): torch 2.0.0, transformers 4.20.0.
+torch
+transformers
+huggingface_hub
+safetensors

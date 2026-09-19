@@ -58,17 +58,33 @@ class Engine(NamedTuple):
     patterns_by_type: dict
 
 
+PARSERS = ("stanza", "bert", "bert-deps")
+
+
 def build_engine(mode: str = "both",
                  linkers_csv: str = None,
                  intro_csv: str = None,
-                 nlp=None) -> Engine:
+                 nlp=None,
+                 parser: str = "stanza") -> Engine:
     """Construct the extractor engine. Downloads the stanza `ru` model on
-    first use if it is missing. Pass `nlp` to reuse an existing pipeline."""
+    first use if it is missing. Pass `nlp` to reuse an existing pipeline.
+
+    `parser` selects the source of upos / head / deprel (tokens and lemmas
+    always come from stanza):
+      "stanza"     stanza's own pos + depparse (default);
+      "bert"       upos, head and deprel from the ruBERT biaffine parser
+                   (see bert_parser.py);
+      "bert-deps"  head and deprel from that parser, upos still from stanza.
+    """
     from rules import build_default_checker
+
+    if parser not in PARSERS:
+        raise ValueError(f"parser must be one of {PARSERS}, got {parser!r}")
 
     if nlp is None:
         import stanza
-        processors = "tokenize,pos,lemma,depparse"
+        # with a BERT parser stanza's depparse would be overwritten, so skip it
+        processors = "tokenize,pos,lemma,depparse" if parser == "stanza" else "tokenize,pos,lemma"
         try:
             nlp = stanza.Pipeline("ru", processors=processors,
                                   download_method=None, logging_level="ERROR")
@@ -76,6 +92,10 @@ def build_engine(mode: str = "both",
             stanza.download("ru")
             nlp = stanza.Pipeline("ru", processors=processors,
                                   logging_level="ERROR")
+
+    if parser != "stanza":
+        from bert_parser import BertParsedPipeline, BertSyntaxParser
+        nlp = BertParsedPipeline(nlp, BertSyntaxParser(), replace_pos=(parser == "bert"))
 
     return Engine(
         nlp=nlp,

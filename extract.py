@@ -37,6 +37,7 @@ from pipeline import (
     DEFAULT_INTRO_CSV,
     DEFAULT_LINKERS_CSV,
     DEFAULT_THRESHOLD,
+    PARSERS,
     analyze_parsed,
     build_engine,
     combine_stats,
@@ -108,6 +109,11 @@ def parse_args():
     )
     parser.add_argument("--linkers-csv", default=str(DEFAULT_LINKERS_CSV), help="Linkers word list CSV.")
     parser.add_argument("--intro-csv", default=str(DEFAULT_INTRO_CSV), help="Introductory words word list CSV.")
+    parser.add_argument(
+        "--parser", choices=PARSERS, default="stanza",
+        help="Source of upos/head/deprel: stanza (default), the ruBERT biaffine parser (bert), "
+             "or its heads/deprels with stanza's POS (bert-deps). See bert_parser.py.",
+    )
 
     return parser.parse_args()
 
@@ -170,8 +176,8 @@ def main():
     if args.input_csv and not args.output:
         sys.exit("--output is required when using --input-csv")
 
-    print("Loading stanza pipeline (tokenize,pos,lemma,depparse)...", file=sys.stderr)
-    engine = build_engine(args.mode, args.linkers_csv, args.intro_csv)
+    print(f"Loading stanza pipeline (parser={args.parser})...", file=sys.stderr)
+    engine = build_engine(args.mode, args.linkers_csv, args.intro_csv, parser=args.parser)
 
     run(args, engine.patterns_by_type, engine.nlp, engine.checker)
 

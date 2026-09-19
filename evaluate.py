@@ -36,7 +36,7 @@ from typing import List, Optional, Tuple
 
 import pandas as pd
 
-from pipeline import DEFAULT_THRESHOLD, build_engine, predict_spans
+from pipeline import DEFAULT_THRESHOLD, PARSERS, build_engine, predict_spans
 from tables import read_table
 
 DEFAULT_BENCHMARK = "src/benchmark2.xlsx"
@@ -408,10 +408,13 @@ def main() -> pd.DataFrame:
                        help="Фильтр строк отчёта по статусу.")
     parser.add_argument("--report", default="src/debug.txt",
                        help="Куда писать полный debug-отчёт.")
+    parser.add_argument("--parser", choices=PARSERS, default="stanza",
+                       help="Откуда брать upos/head/deprel: stanza (по умолчанию), "
+                            "ruBERT-парсер (bert) или его head/deprel + POS stanza (bert-deps).")
     args = parser.parse_args()
 
-    print("Loading stanza pipeline (tokenize,pos,lemma,depparse)...", file=sys.stderr)
-    engine = build_engine("both")
+    print(f"Loading stanza pipeline (parser={args.parser})...", file=sys.stderr)
+    engine = build_engine("both", parser=args.parser)
 
     return process_benchmark(args.benchmark, engine, threshold=args.threshold,
                              n=args.limit, report_path=args.report,

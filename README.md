@@ -28,6 +28,9 @@ python -c "import stanza; stanza.download('ru')"   # разовая загруз
 - `extract.py` — точка входа для запуска из командной строки.
 - `evaluate.py` — оценка экстрактора на эталонном датасете с ручной разметкой
   (см. ниже «Оценка на бенчмарке»).
+- `bert_parser.py`, `compare_parsers.py`, `validate_bert_parser.py` — замена
+  синтаксической разметки stanza на ruBERT-парсер и сравнение результатов
+  (см. ниже «Сравнение парсеров»).
 
 ## Использование
 
@@ -117,3 +120,27 @@ python evaluate.py --status ERR --limit 100 --report src/debug.txt
 Сопоставление предсказанных спанов с эталонными — по символьным смещениям в
 очищенном тексте, с запасным сравнением по поверхностной форме при частичном
 перекрытии границ.
+
+## Сравнение парсеров
+
+Вместо `pos` + `depparse` из stanza можно взять upos/head/deprel из
+[IuliiaPr/my-ruBert-parser-model](https://huggingface.co/IuliiaPr/my-ruBert-parser-model)
+(ruBERT + biaffine, обучен на UD Russian-Taiga). Токенизация и леммы остаются
+от stanza — модель лемм не предсказывает. Нужен Python 3.8
+(`conda activate py38`) и `pip install -r requirements-bert.txt`.
+
+```bash
+python evaluate.py --parser bert            # stanza | bert | bert-deps
+python extract.py --parser bert --text "..."
+python compare_parsers.py                   # все три варианта рядом + отчёт о расхождениях
+python validate_bert_parser.py --conllu ru_taiga-ud-train-a.conllu   # проверка декодирования
+```
+
+- `stanza` — как раньше; `bert` — upos, head и deprel из ruBERT-парсера;
+  `bert-deps` — head/deprel из ruBERT-парсера, upos из stanza.
+- Метки Taiga с подтипами (`parataxis:discourse`) приводятся к базовому
+  отношению: `rules.py` сравнивает deprel с `parataxis`/`discourse`/… и иначе
+  не увидел бы их.
+- Голова в модели закодирована позицией подслова со сдвигом на одно слово,
+  подробности — в docstring `bert_parser.py`; `validate_bert_parser.py`
+  проверяет, что после декодирования UAS/LAS сопоставимы с блокнотом.

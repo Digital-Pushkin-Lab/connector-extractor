@@ -1,0 +1,10 @@
+experiment,description,label,precision,recall,f1,f2,tp,fp,fn
+stanza,"upos, head, deprel из stanza (pos + depparse) — базовый вариант",linker,0.9811,0.8,0.8814,0.8307,52,1,13
+stanza,"upos, head, deprel из stanza (pos + depparse) — базовый вариант",intro,0.7297,1.0,0.8437,0.931,27,10,0
+stanza,"upos, head, deprel из stanza (pos + depparse) — базовый вариант",connector,0.9556,0.9348,0.9451,0.9389,86,4,6
+bert,"upos, head, deprel из ruBERT-парсера (IuliiaPr/my-ruBert-parser-model)",linker,1.0,0.8,0.8889,0.8333,52,0,13
+bert,"upos, head, deprel из ruBERT-парсера (IuliiaPr/my-ruBert-parser-model)",intro,0.7297,1.0,0.8437,0.931,27,10,0
+bert,"upos, head, deprel из ruBERT-парсера (IuliiaPr/my-ruBert-parser-model)",connector,0.9663,0.9348,0.9503,0.9409,86,3,6
+bert-deps,"head, deprel из ruBERT-парсера; upos из stanza",linker,1.0,0.8,0.8889,0.8333,52,0,13
+bert-deps,"head, deprel из ruBERT-парсера; upos из stanza",intro,0.7297,1.0,0.8437,0.931,27,10,0
+bert-deps,"head, deprel из ruBERT-парсера; upos из stanza",connector,0.9663,0.9348,0.9503,0.9409,86,3,6
