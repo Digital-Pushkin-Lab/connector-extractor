@@ -1,18 +1,12 @@
 """High-level analysis pipeline: split text into sentences, parse each with
-stanza, match linker/introductory-word patterns, and score them.
+stanza, match linker patterns, and score them.
 
 Ported from `get_stats` / `get_stats_with_examples` / `get_final_stats` in
 `linkers (1).ipynb`, with results reshaped into the flat column layout the
-downstream spreadsheets expect (see `summarize_linkers` / `summarize_intro` /
-`combine_stats`).
+downstream spreadsheets expect (see `summarize_linkers`).
 
-Linkers and introductory words are matched in two fully independent passes
-(`analyze_parsed` is called once per category) -- exactly like the two
-source notebooks, which never shared pattern lists or token-consumption
-state. The stanza parse itself is still done only once per text
-(`parse_sentences`) and its output is reused for both passes, since parsing
-is the expensive step and is identical regardless of which patterns are
-matched against it.
+All connectors (including former introductory words) come from a single
+list, `data/linkers.csv`, and are tagged `linker`.
 """
 
 from __future__ import annotations
@@ -31,22 +25,12 @@ DEFAULT_THRESHOLD = 0.4
 
 DATA_DIR = Path(__file__).parent / "data"
 DEFAULT_LINKERS_CSV = DATA_DIR / "linkers.csv"
-DEFAULT_INTRO_CSV = DATA_DIR / "intro_words.csv"
 
 
-def load_patterns(mode: str = "both",
-                  linkers_csv: str = None,
-                  intro_csv: str = None) -> dict:
-    """Return {"linker": [...]} and/or {"intro": [...]} pattern lists, loaded
-    independently -- they are never merged into a shared list."""
+def load_patterns(linkers_csv: str = None) -> dict:
+    """Return {"linker": [...]}: the pattern list built from `linkers_csv`."""
     linkers_csv = str(linkers_csv or DEFAULT_LINKERS_CSV)
-    intro_csv = str(intro_csv or DEFAULT_INTRO_CSV)
-    patterns_by_type = {}
-    if mode in ("linkers", "both"):
-        patterns_by_type["linker"] = build_patterns_from_csv(linkers_csv)
-    if mode in ("intro", "both"):
-        patterns_by_type["intro"] = build_patterns_from_csv(intro_csv)
-    return patterns_by_type
+    return {"linker": build_patterns_from_csv(linkers_csv)}
 
 
 class Engine(NamedTuple):
@@ -58,10 +42,7 @@ class Engine(NamedTuple):
     patterns_by_type: dict
 
 
-def build_engine(mode: str = "both",
-                 linkers_csv: str = None,
-                 intro_csv: str = None,
-                 nlp=None) -> Engine:
+def build_engine(linkers_csv: str = None, nlp=None) -> Engine:
     """Construct the extractor engine. Downloads the stanza `ru` model on
     first use if it is missing. Pass `nlp` to reuse an existing pipeline."""
     from rules import build_default_checker
@@ -80,7 +61,7 @@ def build_engine(mode: str = "both",
     return Engine(
         nlp=nlp,
         checker=build_default_checker(),
-        patterns_by_type=load_patterns(mode, linkers_csv, intro_csv),
+        patterns_by_type=load_patterns(linkers_csv),
     )
 
 
@@ -123,8 +104,8 @@ def parse_sentences(text: str, nlp) -> Tuple[List[tuple], int]:
 
 
 def analyze_parsed(parsed_sentences: List[tuple], checker, patterns: Sequence[Pattern]) -> List[list]:
-    """Run one independent match+score pass of `patterns` over sentences
-    already parsed by `parse_sentences`."""
+    """Run one match+score pass of `patterns` over sentences already parsed
+    by `parse_sentences`."""
     sentence_results = []
     for sentence_text, tokens, _sentence_start in parsed_sentences:
         sentence_json = sentence_to_json(sentence_text, tokens, patterns)
@@ -162,16 +143,6 @@ def extract_spans(
                     "group_id": group_id,
                 }
 
- 
-                # Приоритет intro над linker:
-                # если type_name == "intro", добавляем небольшой бонус к probability.
-                # Это поможет в спорных случаях, когда один и тот же фрагмент
-                # найден и как linker, и как intro: при равных или близких скорингах
-                # победит intro, что соответствует эталону (=linker=intro → intro).
-                if type_name == "intro":
-                    item["probability"] += 0.01
-                    
-                                   
                 for s, e in entity["spans"]:
                     span_item = item.copy()
                     span_item["start"] = sentence_start + s
@@ -188,9 +159,9 @@ def extract_spans(
 
 
 def dedupe_spans(spans: List[dict]) -> List[dict]:
-    """Collapse exact-duplicate (start, end) matches -- e.g. a word that
-    matches both the linker and intro lists -- keeping whichever has the
-    higher scored probability. Order of first appearance is preserved."""
+    """Collapse exact-duplicate (start, end) matches, keeping whichever has
+    the higher scored probability. Order of first appearance is preserved.
+    With a single pattern list this is a safety net rather than a necessity."""
     best: dict = {}
     order: List[Tuple[int, int]] = []
     for sp in spans:
@@ -254,48 +225,3 @@ def summarize_linkers(linker_sentence_results: List[list], threshold: float, wor
         "linkers_per_100": (linker_count / word_count * 100) if word_count else 0.0,
         "unique_linkers_per_100": (unique_linker_count / word_count * 100) if word_count else 0.0,
     }
-
-
-def summarize_intro(intro_sentence_results: List[list], threshold: float, word_count: int) -> dict:
-    unique_intro_words = set()
-    intro_words_by_appearance = []
-    intro_count = 0
-
-    for sentence in intro_sentence_results:
-        kept = []
-        for match in sentence:
-            if round_half_up(match["probability"]) >= threshold:
-                unique_intro_words.add(match["linker"])
-                intro_count += 1
-                kept.append(match["linker"])
-        intro_words_by_appearance.append(kept)
-
-    unique_intro_count = len(unique_intro_words)
-
-    return {
-        "intro_result": intro_sentence_results,
-        "unique_intro_count": unique_intro_count,
-        "intro_count": intro_count,
-        "unique_intro_words": sorted(unique_intro_words),
-        "intro_words_by_appearance": intro_words_by_appearance,
-        "intro_per_100": (intro_count / word_count * 100) if word_count else 0.0,
-        "unique_intro_per_100": (unique_intro_count / word_count * 100) if word_count else 0.0,
-    }
-
-
-def combine_stats(linker_stats: dict, intro_stats: dict, word_count: int) -> dict:
-    """Merge linker and introductory-word stats into one row, inserting the
-    combined `linker_and_intro_per_100` metric between `intro_per_100` and
-    `unique_intro_per_100`."""
-    total_count = linker_stats["linker_count"] + intro_stats["intro_count"]
-
-    combined = dict(linker_stats)
-    combined["intro_result"] = intro_stats["intro_result"]
-    combined["unique_intro_count"] = intro_stats["unique_intro_count"]
-    combined["intro_count"] = intro_stats["intro_count"]
-    combined["unique_intro_words"] = intro_stats["unique_intro_words"]
-    combined["intro_words_by_appearance"] = intro_stats["intro_words_by_appearance"]
-    combined["intro_per_100"] = intro_stats["intro_per_100"]
-    combined["linker_and_intro_per_100"] = (total_count / word_count * 100) if word_count else 0.0
-    combined["unique_intro_per_100"] = intro_stats["unique_intro_per_100"]
-    return combined

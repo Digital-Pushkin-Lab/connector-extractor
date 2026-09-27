@@ -1,5 +1,5 @@
 """Rule-based scorer that estimates how likely a matched span is to actually
-be functioning as a linker/introductory word (vs. a coincidental word sequence).
+be functioning as a linker (vs. a coincidental word sequence).
 
 Ported from `RuleBasedLinkerChecker` and its `rule_*` functions in
 `linkers (1).ipynb`. Each rule inspects the matched token parts and votes

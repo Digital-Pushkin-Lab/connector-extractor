@@ -1,7 +1,9 @@
-# Извлечение линкеров/вводных слов
+# Извлечение линкеров
 
-Извлекает из текста русскоязычные линкеры и/или вводные слова (интро-слова)
-с помощью синтаксического парсинга stanza и скоринга на основе правил.
+Извлекает из текста русскоязычные линкеры с помощью синтаксического парсинга
+stanza и скоринга на основе правил. Вводные слова больше не выделяются в
+отдельный тип: все коннекторы берутся из одного словаря `data/linkers.csv`
+и получают метку `linker`.
 ## Установка
 
 ```bash
@@ -11,18 +13,17 @@ python -c "import stanza; stanza.download('ru')"   # разовая загруз
 
 ## Файлы
 
-- `data/linkers.csv` — словарь линкеров (из `linkers.csv`).
-- `data/intro_words.csv` — словарь вводных слов (из
-  `Коннекторы и вводные слова - вводные конструкции все.csv`).
-- `patterns.py` — превращает словари из CSV в паттерны для сопоставления,
-  помеченные типом источника (`linker`/`intro`).
+- `data/linkers.csv` — словарь линкеров (собирается из
+  `Коннекторы_правка.xlsx` скриптом `build_linkers_csv.py`).
+- `build_linkers_csv.py` — пересборка `data/linkers.csv` из таблицы.
+- `patterns.py` — превращает словарь из CSV в паттерны для сопоставления.
 - `matching.py` — сопоставляет паттерны с токенами предложений, разобранных
   stanza.
 - `rules.py` — скорер на основе правил (`RuleBasedLinkerChecker`), который
-  оценивает, насколько найденный фрагмент похож на настоящий линкер/вводное
-  слово, а не на случайное совпадение.
+  оценивает, насколько найденный фрагмент похож на настоящий линкер, а не на
+  случайное совпадение.
 - `pipeline.py` — связывает парсинг, сопоставление и скоринг воедино, считает
-  итоговую статистику по каждому типу, а также собирает движок (`build_engine`)
+  итоговую статистику, а также собирает движок (`build_engine`)
   и отдаёт спаны с символьными смещениями (`extract_spans` / `predict_spans`).
 - `tables.py` — единое чтение таблиц (`.csv` / `.tsv` / `.xlsx`) в DataFrame.
 - `extract.py` — точка входа для запуска из командной строки.
@@ -32,31 +33,20 @@ python -c "import stanza; stanza.download('ru')"   # разовая загруз
 ## Использование
 
 ```bash
-# Одно предложение, только линкеры, JSON выводится в stdout
-python extract.py --mode linkers --text "Более того, к Швеции отошли города Ивангород и Копорье."
+# Одно предложение, JSON выводится в stdout
+python extract.py --text "Более того, к Швеции отошли города Ивангород и Копорье."
 
-# Текстовый файл, только вводные слова
-python extract.py --mode intro --input-file article.txt --output result.json
-
-# Линкеры и вводные слова за один проход
-python extract.py --mode both --text "Если ты придёшь, то я буду рад."
+# Текстовый файл
+python extract.py --input-file article.txt --output result.json
 
 # Пакетный режим: анализ каждой строки колонки в CSV, запись CSV с добавленными колонками статистики
-python extract.py --mode both --input-csv texts.csv --text-column text --output results.csv
+python extract.py --input-csv texts.csv --text-column text --output results.csv
 ```
-
-`--mode` определяет, какой словарь (или словари) используется для сопоставления с текстом:
-- `linkers` — сопоставление только с `data/linkers.csv`.
-- `intro` — сопоставление только с `data/intro_words.csv`.
-- `both` — сопоставление с обоими словарями за один проход; каждое найденное
-  совпадение помечается тем, из какого словаря (или словарей) оно взято
-  (выражение, присутствующее в обоих списках, попадает в статистику обоих
-  типов).
 
 Прочие параметры:
 - `--threshold` (по умолчанию `0.4`) — минимальная оценённая вероятность,
   при которой совпадение считается достоверным.
-- `--linkers-csv` / `--intro-csv` — указать альтернативные словари.
+- `--linkers-csv` — указать альтернативный словарь.
 
 ## Формат вывода
 
@@ -64,8 +54,6 @@ python extract.py --mode both --input-csv texts.csv --text-column text --output 
 CSV, для `--text`/`--input-file` — тот же набор полей выводится как JSON).
 Показатели "на 100 слов" считаются от числа не-пунктуационных токенов в
 тексте.
-
-При `--mode linkers`:
 
 | Колонка | Описание |
 |---|---|
@@ -77,40 +65,22 @@ CSV, для `--text`/`--input-file` — тот же набор полей выв
 | `linkers_per_100` | `linker_count`, нормализованный на 100 слов |
 | `unique_linkers_per_100` | `unique_linker_count`, нормализованный на 100 слов |
 
-При `--mode intro` — та же структура, но для вводных слов:
-`intro_result`, `unique_intro_count`, `intro_count`, `unique_intro_words`,
-`intro_words_by_appearance`, `intro_per_100`, `unique_intro_per_100`.
-
-При `--mode both` колонки объединяются в следующем порядке:
-
-```
-linkers_result, unique_linker_count, linker_count, unique_linkers,
-linkers_by_appearance, linkers_per_100, unique_linkers_per_100,
-intro_result, unique_intro_count, intro_count, unique_intro_words,
-intro_words_by_appearance, intro_per_100, linker_and_intro_per_100,
-unique_intro_per_100
-```
-
-`linker_and_intro_per_100` — суммарное количество линкеров и вводных слов,
-нормализованное на 100 слов (доступно только при `--mode both`).
-
 ## Оценка на бенчмарке
 
 `evaluate.py` прогоняет экстрактор на датасете с ручной разметкой и считает
-precision / recall / F1 / F2 для `linker`, `intro` и `connector` (linker и
-intro вместе, без учёта типа).
+precision / recall / F1 / F2 для `linker`.
 
 ```bash
-python evaluate.py                                   # src/benchmark2.xlsx
+python evaluate.py                                   # src/benchmark3_all_linkers.xlsx
 python evaluate.py --benchmark src/benchmark.tsv --threshold 0.4
 python evaluate.py --status ERR --limit 100 --report src/debug.txt
 ```
 
-Формат эталона (`.tsv` / `.xlsx`, колонка `text`): линкер / вводное слово
-заключается в квадратные скобки с меткой — `[если]=linker`, `[кстати]=intro`,
-`[правда]=other` (метка `other` в метрики не идёт). Хвост `0` (`[Если]=linker0`)
-помечает первую часть составной конструкции; двойная метка
-(`[Действительно]=linker=intro`) — верна последняя; строки, где `text`
+Формат эталона (`.tsv` / `.xlsx`, колонка `text`): линкер заключается в
+квадратные скобки с меткой — `[если]=linker`, `[правда]=other` (метка `other`
+в метрики не идёт; метка `intro` из старых бенчмарков засчитывается как
+`linker`). Хвост `0` (`[Если]=linker0`) помечает первую часть составной
+конструкции; двойная метка (`[Действительно]=other=linker`) — верна последняя; строки, где `text`
 начинается с `!`, считаются комментариями. Полный разбор формата — в шапке
 `src/benchmark.tsv` и в docstring `evaluate.py`.
 

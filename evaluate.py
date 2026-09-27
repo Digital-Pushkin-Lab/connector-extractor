@@ -2,29 +2,30 @@
 evaluate.py — оценка экстрактора коннекторов на эталонном датасете.
 
 Что делает:
-  1. читает бенчмарк с ручной разметкой (.tsv / .xlsx), где линкеры и
-     вводные слова заключены в квадратные скобки с меткой:
+  1. читает бенчмарк с ручной разметкой (.tsv / .xlsx), где линкеры
+     заключены в квадратные скобки с меткой:
          [Если]=linker0 мы сделаем уроки, [то]=linker пойдём гулять.
   2. убирает эталонную разметку и прогоняет экстрактор
      (`pipeline.predict_spans`) на очищенном тексте;
   3. сопоставляет предсказанные спаны с эталонными по символьным
      смещениям (с запасным сравнением по поверхностной форме);
-  4. считает precision / recall / F1 / F2 для `linker`, `intro` и
-     `connector` (linker+intro без учёта типа) и печатает debug-отчёт.
+  4. считает precision / recall / F1 / F2 для `linker` и печатает
+     debug-отчёт.
 
 Экстрактор и его правила живут в linker_extraction; здесь — только
 эталонный парсер и метрики. Модуль не строит разметку для показа и не
 дублирует логику фронтенда (gradio_app).
 
 Формат эталонной разметки (см. шапку src/benchmark.tsv):
-  [x]=linker / =intro / =other   — метка фрагмента (other в метрики не идёт);
+  [x]=linker / =other            — метка фрагмента (other в метрики не идёт);
   [x]=linker0                    — первая часть составной конструкции;
-  [x]=linker=intro               — двойная метка, верна последняя;
+  [x]=other=linker               — двойная метка, верна последняя;
   [x]==linker                    — baseline не нашёл даже омонима;
+  метка intro из старых бенчмарков читается как linker;
   строки, где text начинается с "!" — комментарии, пропускаются.
 
 Запуск:
-  python evaluate.py                         # src/benchmark2.xlsx
+  python evaluate.py                         # src/benchmark3_all_linkers.xlsx
   python evaluate.py --benchmark src/benchmark.tsv --threshold 0.4
   python evaluate.py --status ERR --limit 100 --report src/debug.txt
 """
@@ -39,7 +40,7 @@ import pandas as pd
 from pipeline import DEFAULT_THRESHOLD, build_engine, predict_spans
 from tables import read_table
 
-DEFAULT_BENCHMARK = "src/benchmark2.xlsx"
+DEFAULT_BENCHMARK = "src/benchmark3_all_linkers.xlsx"
 
 
 # =============================================================================
@@ -51,19 +52,20 @@ MARKUP_RE = re.compile(r"\[([^\]]*)\]((?:=+[a-z0-9]*)*)")
 
 
 def _raw_label(suffix: str) -> str:
-    """Последняя непустая метка из хвоста «=linker=intro» / «==linker»."""
+    """Последняя непустая метка из хвоста «=other=linker» / «==linker»."""
     labels = [lb for lb in re.findall(r"=+([a-z0-9]*)", suffix) if lb]
     return labels[-1] if labels else ""
 
 
 def normalize_label(raw_label: str) -> Optional[str]:
-    """linker0 / linker1 → linker; intro* → intro; other / пусто → None."""
+    """linker0 / linker1 / intro* → linker; other / пусто → None.
+
+    Вводные слова больше не выделяются в отдельный тип: метка intro из
+    старых бенчмарков засчитывается как linker."""
     if not raw_label:
         return None
-    if raw_label.startswith("linker"):
+    if raw_label.startswith(("linker", "intro")):
         return "linker"
-    if raw_label.startswith("intro"):
-        return "intro"
     return None
 
 
@@ -73,7 +75,7 @@ def parse_reference(marked_text: str) -> Tuple[str, List[dict]]:
     Возвращает `(clean_text, entities)`, где:
       - clean_text — текст без разметки (именно он подаётся экстрактору);
       - entities   — список {"start", "end", "surface", "label"} со
-                     смещениями в clean_text; label ∈ {"linker", "intro"}
+                     смещениями в clean_text; label == "linker"
                      (метка other и пустые отброшены).
     """
     if not isinstance(marked_text, str) or not marked_text:
@@ -156,7 +158,7 @@ def predict_entities(clean_text: str, engine, threshold: float) -> List[dict]:
             "label": sp["type"],
         }
         for sp in spans
-        if sp["type"] in ("linker", "intro")
+        if sp["type"] == "linker"
     ]
 
 
@@ -172,12 +174,12 @@ def _overlap(a: dict, b: dict) -> bool:
     return a["start"] < b["end"] and b["start"] < a["end"]
 
 
-def _match(ref: List[dict], pred: List[dict], *, use_label: bool):
+def _match(ref: List[dict], pred: List[dict]):
     """Жадное сопоставление ref↔pred.
 
-    Проход 1: точное совпадение границ (и метки при use_label).
+    Проход 1: точное совпадение границ.
     Проход 2: запасной — перекрытие границ + совпадение поверхностной
-              формы (и метки при use_label).
+              формы.
 
     Возвращает (tp_pairs, fp_entities, fn_entities).
     """
@@ -188,8 +190,6 @@ def _match(ref: List[dict], pred: List[dict], *, use_label: bool):
     def take(matched):
         for p in list(pred_pool):
             for r in list(ref_pool):
-                if use_label and r["label"] != p["label"]:
-                    continue
                 if matched(r, p):
                     tp.append((r, p))
                     ref_pool.remove(r)
@@ -207,21 +207,8 @@ def evaluate_row(ref_ents: List[dict], pred_ents: List[dict]) -> dict:
     """Единственное место, где считаются tp/fp/fn, статус и span-метрики
     для одной пары (эталон, предсказание). Результат кладётся в DataFrame,
     поэтому метрики и debug-отчёт ничего не пересчитывают."""
-    tp_l, fp_l, fn_l = _match(ref_ents, pred_ents, use_label=True)
-    tp_c, fp_c, fn_c = _match(ref_ents, pred_ents, use_label=False)
-
-    def count_pairs(pairs, label: str) -> int:
-        return sum(1 for r, _ in pairs if r["label"] == label)
-
-    def count_ents(entities, label: str) -> int:
-        return sum(1 for e in entities if e["label"] == label)
-
-    if not fp_l and not fn_l:
-        status = "OK"
-    elif not fp_c and not fn_c:
-        status = "PART"          # все фрагменты найдены, но метка перепутана
-    else:
-        status = "ERR"
+    tp, fp, fn = _match(ref_ents, pred_ents)
+    status = "OK" if not fp and not fn else "ERR"
 
     def items(seq, is_pair=False):
         if is_pair:
@@ -230,21 +217,13 @@ def evaluate_row(ref_ents: List[dict], pred_ents: List[dict]) -> dict:
 
     return {
         "status": status,
-        "tp_items": items(tp_l, is_pair=True),
-        "fp_items": items(fp_l),
-        "fn_items": items(fn_l),
+        "tp_items": items(tp, is_pair=True),
+        "fp_items": items(fp),
+        "fn_items": items(fn),
 
-        "tp_linker": count_pairs(tp_l, "linker"),
-        "fp_linker": count_ents(fp_l, "linker"),
-        "fn_linker": count_ents(fn_l, "linker"),
-
-        "tp_intro": count_pairs(tp_l, "intro"),
-        "fp_intro": count_ents(fp_l, "intro"),
-        "fn_intro": count_ents(fn_l, "intro"),
-
-        "tp_connector": len(tp_c),
-        "fp_connector": len(fp_c),
-        "fn_connector": len(fn_c),
+        "tp_linker": len(tp),
+        "fp_linker": len(fp),
+        "fn_linker": len(fn),
     }
 
 
@@ -295,15 +274,14 @@ def add_evaluation_columns(df: pd.DataFrame, engine, threshold: float) -> pd.Dat
 
 def evaluate_markup(df: pd.DataFrame) -> dict:
     """Суммирует числовые колонки оценки и считает P/R по label."""
-    required = [f"{p}_{lbl}" for p in ("tp", "fp", "fn")
-               for lbl in ("linker", "intro", "connector")]
+    required = [f"{p}_linker" for p in ("tp", "fp", "fn")]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise KeyError(f"Нет колонок оценки: {missing}. "
                       "Сначала вызовите add_evaluation_columns(df).")
 
     metrics = {}
-    for label in ("linker", "intro", "connector"):
+    for label in ("linker",):
         tp = int(df[f"tp_{label}"].sum())
         fp = int(df[f"fp_{label}"].sum())
         fn = int(df[f"fn_{label}"].sum())
@@ -317,7 +295,7 @@ def evaluate_markup(df: pd.DataFrame) -> dict:
 def print_metrics(metrics: dict) -> None:
     print("Метрики (span-level, micro):")
     print("-" * 60)
-    for label in ("linker", "intro", "connector"):
+    for label in ("linker",):
         m = metrics[label]
         p, r = m["precision"], m["recall"]
         f1 = (2 * p * r) / (p + r) if (p + r) else 0.0
@@ -404,14 +382,14 @@ def main() -> pd.DataFrame:
                        help=f"Порог вероятности экстрактора (default: {DEFAULT_THRESHOLD}).")
     parser.add_argument("--limit", type=int, default=0,
                        help="Сколько строк отчёта печатать на экран (0 — только в файл).")
-    parser.add_argument("--status", default="", choices=["", "OK", "PART", "ERR"],
+    parser.add_argument("--status", default="", choices=["", "OK", "ERR"],
                        help="Фильтр строк отчёта по статусу.")
     parser.add_argument("--report", default="src/debug.txt",
                        help="Куда писать полный debug-отчёт.")
     args = parser.parse_args()
 
     print("Loading stanza pipeline (tokenize,pos,lemma,depparse)...", file=sys.stderr)
-    engine = build_engine("both")
+    engine = build_engine()
 
     return process_benchmark(args.benchmark, engine, threshold=args.threshold,
                              n=args.limit, report_path=args.report,

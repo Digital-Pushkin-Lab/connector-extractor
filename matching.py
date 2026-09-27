@@ -1,13 +1,8 @@
-"""Match linker/introductory-word patterns against stanza-parsed sentence tokens.
+"""Match linker patterns against stanza-parsed sentence tokens.
 
 A pattern may consist of several parts that must appear in order with a
 non-empty gap between them (e.g. "если ... то"). Ported from the notebooks
 `linkers (1).ipynb` and `connectors within linkers.ipynb`.
-
-Linkers and introductory words are matched in separate passes (see
-`pipeline.analyze_parsed`), each with its own token-consumption state, so a
-match in one category can never suppress a match in the other -- exactly
-like the two source notebooks, which never shared state either.
 """
 
 from typing import List, Optional, Sequence, Tuple
@@ -112,9 +107,7 @@ def match_pattern(tokens, start: int, pattern: Pattern) -> Optional[List[Tuple[i
 
 def extract_entities_from_sentence(tokens, patterns: Sequence[Pattern]) -> List[dict]:
     """Greedily find non-overlapping pattern matches in a sentence's tokens,
-    longest (most parts, then most words) first. `patterns` should be a
-    single category's pattern list (linkers OR introductory words) -- run
-    this separately per category so the two never compete for tokens."""
+    longest (most parts, then most words) first."""
     used = [False] * len(tokens)
     results = []
 

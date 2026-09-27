@@ -1,28 +1,20 @@
 #!/usr/bin/env python3
-"""Extract Russian linkers and/or introductory words from text.
+"""Extract Russian linkers from text.
 
 Uses stanza dependency parsing plus a rule-based scorer to find and score
-candidate spans matching a dictionary of known linker/introductory-word
-expressions (ported from `linkers (1).ipynb` and
+candidate spans matching a dictionary of known linker expressions
+(`data/linkers.csv`; ported from `linkers (1).ipynb` and
 `connectors within linkers.ipynb`).
 
-Linkers and introductory words are always matched in independent passes,
-each with its own greedy non-overlapping match state -- exactly as in the
-two source notebooks. This matters because the two word lists overlap and
-otherwise diverge: a longer match in one list (e.g. the introductory phrase
-"конечно же") would otherwise be able to consume tokens that a shorter,
-unrelated entry in the other list (e.g. the linker "же") should be free to
-match on its own.
-
 Examples:
-    # Analyze one sentence for linkers only, print JSON to stdout
-    python extract.py --mode linkers --text "Более того, к Швеции отошли города Ивангород и Копорье."
+    # Analyze one sentence, print JSON to stdout
+    python extract.py --text "Более того, к Швеции отошли города Ивангород и Копорье."
 
-    # Analyze a text file for introductory words only
-    python extract.py --mode intro --input-file article.txt
+    # Analyze a text file
+    python extract.py --input-file article.txt
 
-    # Batch-analyze a CSV column for both linkers and introductory words
-    python extract.py --mode both --input-csv texts.csv --text-column text --output results.csv
+    # Batch-analyze a CSV column
+    python extract.py --input-csv texts.csv --text-column text --output results.csv
 """
 
 import argparse
@@ -34,38 +26,20 @@ import pandas as pd
 from tqdm import tqdm
 
 from pipeline import (
-    DEFAULT_INTRO_CSV,
     DEFAULT_LINKERS_CSV,
     DEFAULT_THRESHOLD,
     analyze_parsed,
     build_engine,
-    combine_stats,
-    load_patterns,  # re-exported for callers that still `from extract import load_patterns`
+    load_patterns,  # noqa: F401  (re-exported for callers that still `from extract import load_patterns`)
     parse_sentences,
-    summarize_intro,
     summarize_linkers,
 )
-from rules import build_default_checker  # noqa: F401  (re-exported for test_patterns.py)
 from tables import read_table
 
 
-def compute_stats(mode: str, parsed_sentences, patterns_by_type: dict, checker, threshold: float, word_count: int) -> dict:
-    linker_stats = None
-    intro_stats = None
-
-    if "linker" in patterns_by_type:
-        linker_results = analyze_parsed(parsed_sentences, checker, patterns_by_type["linker"])
-        linker_stats = summarize_linkers(linker_results, threshold, word_count)
-
-    if "intro" in patterns_by_type:
-        intro_results = analyze_parsed(parsed_sentences, checker, patterns_by_type["intro"])
-        intro_stats = summarize_intro(intro_results, threshold, word_count)
-
-    if mode == "linkers":
-        return linker_stats
-    if mode == "intro":
-        return intro_stats
-    return combine_stats(linker_stats, intro_stats, word_count)
+def compute_stats(parsed_sentences, patterns_by_type: dict, checker, threshold: float, word_count: int) -> dict:
+    linker_results = analyze_parsed(parsed_sentences, checker, patterns_by_type["linker"])
+    return summarize_linkers(linker_results, threshold, word_count)
 
 
 def parse_args():
@@ -74,24 +48,10 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
-    #ASamsonov делаем параметр необязательным для передачи в командной строке. В случае его отсутствия он задаётся, как both
-    # parser.add_argument(
-    #     "--mode", choices=["linkers", "intro", "both"], required=True,
-    #     help="Which kind of entity to extract from the text.",
-    # )
-    # input_group = parser.add_mutually_exclusive_group(required=True)
-    # input_group.add_argument("--text", help="Raw text to analyze.")
-    # input_group.add_argument("--input-file", help="Path to a plain text file to analyze.")
-    # input_group.add_argument("--input-csv", help="Path to a CSV file with a text column to analyze in batch.")
-    parser.add_argument(
-        "--mode", choices=["linkers", "intro", "both"], default="both",
-        help="Which kind of entity to extract from the text.",
-    )
     input_group = parser.add_mutually_exclusive_group(required=False)
     input_group.add_argument("--text", help="Raw text to analyze.", default=None)
     input_group.add_argument("--input-file", help="Path to a plain text file to analyze.", default=None)
-    input_group.add_argument("--input-csv", help="Path to a CSV file with a text column to analyze in batch.", default=None)    
-    #ASamsonov
+    input_group.add_argument("--input-csv", help="Path to a CSV file with a text column to analyze in batch.", default=None)
 
     parser.add_argument(
         "--text-column", default="text",
@@ -107,7 +67,6 @@ def parse_args():
         help=f"Minimum scored probability to keep a match (default: {DEFAULT_THRESHOLD}).",
     )
     parser.add_argument("--linkers-csv", default=str(DEFAULT_LINKERS_CSV), help="Linkers word list CSV.")
-    parser.add_argument("--intro-csv", default=str(DEFAULT_INTRO_CSV), help="Introductory words word list CSV.")
 
     return parser.parse_args()
 
@@ -117,9 +76,9 @@ def get_ext(file_name):
     return Path(file_name).suffix
 
 
-def run_single(text, mode, patterns_by_type, nlp, checker, threshold, output_path):
+def run_single(text, patterns_by_type, nlp, checker, threshold, output_path):
     parsed_sentences, word_count = parse_sentences(text, nlp)
-    stats = compute_stats(mode, parsed_sentences, patterns_by_type, checker, threshold, word_count)
+    stats = compute_stats(parsed_sentences, patterns_by_type, checker, threshold, word_count)
     output_json = json.dumps(stats, ensure_ascii=False, indent=2)
 
     if output_path:
@@ -129,7 +88,7 @@ def run_single(text, mode, patterns_by_type, nlp, checker, threshold, output_pat
         print(output_json)
 
 
-def run_batch(input_csv, text_column, output_path, mode, patterns_by_type, nlp, checker, threshold):
+def run_batch(input_csv, text_column, output_path, patterns_by_type, nlp, checker, threshold):
     # Reads .csv (comma) or .tsv/.txt/.xlsx (tab / sheet); see tables.read_table.
     df = read_table(input_csv)
 
@@ -143,7 +102,7 @@ def run_batch(input_csv, text_column, output_path, mode, patterns_by_type, nlp, 
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Analyzing"):
         text = str(row[text_column]) if pd.notna(row[text_column]) else ""
         parsed_sentences, word_count = parse_sentences(text, nlp)
-        rows.append(compute_stats(mode, parsed_sentences, patterns_by_type, checker, threshold, word_count))
+        rows.append(compute_stats(parsed_sentences, patterns_by_type, checker, threshold, word_count))
 
     stats_df = pd.DataFrame(rows)
     result_df = pd.concat([df.reset_index(drop=True), stats_df], axis=1)
@@ -158,10 +117,10 @@ def run_batch(input_csv, text_column, output_path, mode, patterns_by_type, nlp, 
 def run(args, patterns_by_type, nlp, checker):
     """Dispatch to batch or single-text mode based on `args`."""
     if args.input_csv:
-        run_batch(args.input_csv, args.text_column, args.output, args.mode, patterns_by_type, nlp, checker, args.threshold)
+        run_batch(args.input_csv, args.text_column, args.output, patterns_by_type, nlp, checker, args.threshold)
     else:
         text = args.text if args.text is not None else Path(args.input_file).read_text(encoding="utf-8")
-        run_single(text, args.mode, patterns_by_type, nlp, checker, args.threshold, args.output)
+        run_single(text, patterns_by_type, nlp, checker, args.threshold, args.output)
 
 
 def main():
@@ -171,7 +130,7 @@ def main():
         sys.exit("--output is required when using --input-csv")
 
     print("Loading stanza pipeline (tokenize,pos,lemma,depparse)...", file=sys.stderr)
-    engine = build_engine(args.mode, args.linkers_csv, args.intro_csv)
+    engine = build_engine(args.linkers_csv)
 
     run(args, engine.patterns_by_type, engine.nlp, engine.checker)
 

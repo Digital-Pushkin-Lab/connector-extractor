@@ -1,4 +1,4 @@
-"""Build matching patterns from the linker/introductory-word CSV word lists.
+"""Build matching patterns from the linker CSV word list.
 
 Ported from the `linker_list_to_patterns` helper shared by both source
 notebooks.
