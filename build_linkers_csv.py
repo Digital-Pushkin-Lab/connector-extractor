@@ -40,7 +40,7 @@ from pathlib import Path
 import openpyxl
 
 DATA_DIR = Path(__file__).parent / "data"
-DEFAULT_OUTPUT = DATA_DIR / "linkers.csv"
+DEFAULT_OUTPUT = DATA_DIR / "linkers.tsv"
 
 SHEETS = ["Исходные", "Доп"]
 DEL_FILL_RGB = "FFFFC000"
@@ -135,9 +135,10 @@ def parse_args():
 def main():
     args = parse_args()
     linkers = collect_linkers(args.xlsx)
+    delimiter = "\t" if args.output.endswith(".tsv") else ","
 
     with open(args.output, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES, delimiter=delimiter)
         writer.writeheader()
         for entry in linkers:
             writer.writerow({

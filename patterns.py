@@ -46,5 +46,8 @@ def linker_list_to_patterns(raw_expressions: List[str]) -> List[Pattern]:
 
 
 def build_patterns_from_csv(csv_path: str, column: str = "linker") -> List[Pattern]:
-    df = pd.read_csv(csv_path)
+
+    separator = "\t" if csv_path.endswith(".tsv") else ","
+
+    df = pd.read_csv(csv_path, sep=separator)
     return linker_list_to_patterns(df[column].dropna().tolist())

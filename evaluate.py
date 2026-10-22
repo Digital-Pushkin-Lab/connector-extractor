@@ -309,6 +309,11 @@ def add_evaluation_columns(df: pd.DataFrame, engine, threshold: float) -> pd.Dat
     в колонки df: clean_text, pred_markup, status, tp/fp/fn_items, tp/fp/fn_*."""
     records = []
     for text in df["text"].fillna(""):
+
+        # для отладки
+        if "Дело в том" in text:
+            pass 
+
         clean, ref_ents = parse_reference(text)
 #        pred_ents = predict_entities(clean, engine, threshold)
         # AS2: Получаем полный список сущностей (включая отклонённые)
@@ -391,7 +396,11 @@ def debug_report(df: pd.DataFrame, n: int = 10, file_name: str = "",
             fh.write(text + "\n")
 
     try:
-        printf(f"=== debug: всего {len(df)} строк, на экран первые {n} ===")
+        if n:
+            fragments_str = f"; отбор по fragments: {fragments}" if fragments else ""
+            status_str = f"; отбор по status: {status}" if status else ""
+            printf(f"=== debug: всего {len(df)} строк, на экран первые {n}{fragments_str}{status_str} ===")
+
         shown = 0
         for idx, row in df.iterrows():
             if status and row["status"] != status:
@@ -418,7 +427,8 @@ def debug_report(df: pd.DataFrame, n: int = 10, file_name: str = "",
                 printf(f"ref:  {row['text']}", to_screen)
             printf(f"pred: {row['pred_markup']}", to_screen)
 
-        printf("=== end debug ===")
+        if n:
+            printf("=== end debug ===")
     finally:
         if fh:
             fh.close()
@@ -447,9 +457,9 @@ def main() -> pd.DataFrame:
                        help=f"Файл с эталонной разметкой (default: {DEFAULT_BENCHMARK}).")
     parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
                        help=f"Порог вероятности экстрактора (default: {DEFAULT_THRESHOLD}).")
-    parser.add_argument("--limit", type=int, default=10,
+    parser.add_argument("--limit", type=int, default=0,
                        help="Сколько строк отчёта печатать на экран (0 — только в файл).")
-    parser.add_argument("--status", default="ERR", choices=["", "OK", "ERR"],
+    parser.add_argument("--status", default="", choices=["", "OK", "ERR"],
                        help="Фильтр строк отчёта по статусу.")
     parser.add_argument("--report", default="src/debug.txt",
                        help="Куда писать полный debug-отчёт.")
@@ -459,14 +469,25 @@ def main() -> pd.DataFrame:
     engine = build_engine()
 
     # #AS2 Просто для ускорения отладки
-    # args.limit=30
-    # args.benchmark = "src/books200.xlsx"
+#    args.limit=30
+    args.benchmark = "src/books200.xlsx"
     # #AS2
 
 
-    return process_benchmark(args.benchmark, engine, threshold=args.threshold,
+    df = process_benchmark(args.benchmark, engine, threshold=args.threshold,
                              n=args.limit, report_path=args.report,
                              status=args.status)
+    
+    debug_report(df, n=100, status="ERR")
+    # debug_report(df, n=100, fragments=["тогда же"])    
+    # debug_report(df, n=100, fragments=["не как"])    
+    # debug_report(df, n=100, fragments=["именно"])    
+    # debug_report(df, n=100, fragments=["также"])    
+#    debug_report(df, n=100, fragments=["затем"])    
+#    debug_report(df, n=100, fragments=["дело в том"])    
+#    debug_report(df, n=100, status="ERR", fragments=["при этом", "в результате"])
+
+    return df
 
 
 if __name__ == "__main__":

@@ -120,6 +120,7 @@ def rule_pri_etom_dependent(parts):
     как
     как правило
     в то же время
+    к тому же
     """
 
     triggers_set = {
@@ -172,7 +173,6 @@ def rule_phrase_in_list(parts):
 
     #AS2 добавляем "однако" и другие
     triggers = """
-    затем
     поэтому
     вследствие чего
     после чего
@@ -180,29 +180,32 @@ def rule_phrase_in_list(parts):
     с целью
     фактически
     например
+    тогда же
+    именно
+    в противном случае
+    благодаря
+    в это же время
     """
 
     if in_triggers(texts, triggers):
         return 1
     
-
     #AS2 новый блок +2
     triggers = """
     даже
+    также
+    затем
     """
     if in_triggers(texts, triggers):
         return 2
     
 
-
-
     #AS2 Добавляем блок. Эти слова штрафуем
     triggers = """
     что
     """
-
     if in_triggers(texts, triggers):
-        return -3
+        return -2
 
 
     return 0
@@ -216,7 +219,7 @@ def rule_conjunction_i(parts):
         return 0
 
     w = words[0]
-    if w.get("text", "").lower() != "и" and w.get("text", "").lower() != "или":
+    if w.get("text", "").lower() != "и" and w.get("text", "").lower() != "или" and w.get("text", "").lower() != "либо":
         return 0
 
     # типичные признаки сочинительного союза у Stanza
@@ -237,23 +240,6 @@ class RuleBasedLinkerChecker:
         """Правило, которое при 0 не влияет на probability."""
         self.extra_rules.append(rule_fn)
 
-
-    #AS Старый метод
-    def score_entity_(self, entity: dict) -> float:
-        """entity: {"surface": ..., "parts": {part1: [...], ...}}"""
-        n = len(self.rules) #AS Добавляем n
-        score = sum(rule(entity["parts"]) for rule in self.rules) if n else 0
-        p = score / n if n else 0.0
-
-        #AS Применяем экстра-правмила extra: 0 игнорируем; ±1 сдвигает p на один «шаг» обычного правила
-        step = 1.0 / n if n else 1.0
-        for rule in self.extra_rules:
-            v = rule(entity["parts"])
-            if v != 0:
-                p += v * step    
-        #AS
-
-        return max(0.0, p)
 
     #AS Метод доработан. 1. Добавлены экстра--правила 2. Добавлены отладочные сообщения    
     def score_entity(self, entity: dict, debug: bool = False) -> float:
@@ -288,6 +274,9 @@ class RuleBasedLinkerChecker:
 
     def score_sentence(self, sentence_json: dict, debug: bool = False) -> List[dict]:
         results = []
+        if debug:
+            print(sentence_json.get('sentence'))
+
         for entity in sentence_json.get("entities", []):
             results.append({
                 "linker": entity["surface"],

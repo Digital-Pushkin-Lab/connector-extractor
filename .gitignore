@@ -11,5 +11,8 @@ env/
 .DS_Store
 
 
-src/books200.xlsx
+src/books*.*
 src/debug*.txt
+
+# этот файл готовит тестовые датасеты, но он нуждается в переработке, поэтому пока игнорим
+markup.py
