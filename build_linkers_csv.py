@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Build data/linkers.csv from Коннекторы_правка.xlsx.
+Build data/linkers.csv from Коннекторы_правка_семфилдов.xlsx
+(Коннекторы_правка.xlsx with the semfield tag corrections applied), which
+is expected next to this repository's directory, alongside the original.
 
 Rerun this script whenever the spreadsheet changes:
 
-    python3 build_linkers_csv.py --xlsx /path/to/Коннекторы_правка.xlsx
+    python3 build_linkers_csv.py [--xlsx /path/to/spreadsheet.xlsx]
 
 Source sheets:
   * "Исходные" - original connector list with revised characteristics
@@ -41,6 +43,7 @@ import openpyxl
 
 DATA_DIR = Path(__file__).parent / "data"
 DEFAULT_OUTPUT = DATA_DIR / "linkers.csv"
+DEFAULT_XLSX = Path(__file__).resolve().parent.parent / "Коннекторы_правка_семфилдов.xlsx"
 
 SHEETS = ["Исходные", "Доп"]
 DEL_FILL_RGB = "FFFFC000"
@@ -127,7 +130,7 @@ def collect_linkers(xlsx_path: str) -> list:
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--xlsx", required=True, help="Path to Коннекторы_правка.xlsx.")
+    parser.add_argument("--xlsx", default=str(DEFAULT_XLSX), help=f"Source spreadsheet (default: {DEFAULT_XLSX}).")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help=f"Output CSV path (default: {DEFAULT_OUTPUT}).")
     return parser.parse_args()
 
