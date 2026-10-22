@@ -113,11 +113,9 @@ def rule_pri_etom_dependent(parts):
     words = all_words(parts)
     texts = tuple(w.get("text", "").lower() for w in words)  # tuple, не list
 
-    #AS2 добавили: как 
     triggers = """
     при этом
     в результате
-    как
     как правило
     в то же время
     """
@@ -147,8 +145,7 @@ def rule_pri_etom_dependent(parts):
         
 
 def rule_phrase_in_list(parts):
-    """Фиксированная оценка для оборотов из списков: +1 (затем, поэтому, однако, …),
-    +2 (даже), -3 (одиночное «что»); остальные обороты — 0."""
+    """Правило даёт +1 балл, если оборот в списке. """
 
     # Это немного "читтерское" правило. Оно даёт оборотам +1 балл (0.2) что позволяет таким оборотам "сработать" при одном сработавшем обычном правиле
     # Смысл тут в том, что некоторые обороты являются всегда коннекторами
@@ -185,26 +182,6 @@ def rule_phrase_in_list(parts):
 
     if in_triggers(texts, triggers):
         return 1
-    
-
-    #AS2 новый блок +2
-    triggers = """
-    даже
-    """
-    if in_triggers(texts, triggers):
-        return 2
-    
-
-
-
-    #AS2 Добавляем блок. Эти слова штрафуем
-    triggers = """
-    что
-    """
-
-    if in_triggers(texts, triggers):
-        return -3
-
 
     return 0
 
