@@ -147,7 +147,8 @@ def rule_pri_etom_dependent(parts):
         
 
 def rule_phrase_in_list(parts):
-    """Правило даёт +1 балл, если оборот в списке. """
+    """Фиксированная оценка для оборотов из списков: +1 (затем, поэтому, однако, …),
+    +2 (даже), -3 (одиночное «что»); остальные обороты — 0."""
 
     # Это немного "читтерское" правило. Оно даёт оборотам +1 балл (0.2) что позволяет таким оборотам "сработать" при одном сработавшем обычном правиле
     # Смысл тут в том, что некоторые обороты являются всегда коннекторами
@@ -210,7 +211,7 @@ def rule_phrase_in_list(parts):
 
 
 def rule_conjunction_i(parts):
-    """Отдельное «и»-союз → сильный бонус; иначе 0 (не влияет на знаменатель)."""
+    """Отдельное «и» / «или»-союз → сильный бонус; иначе 0 (не влияет на знаменатель)."""
     words = all_words(parts)
     if len(words) != 1:
         return 0
@@ -237,23 +238,6 @@ class RuleBasedLinkerChecker:
         """Правило, которое при 0 не влияет на probability."""
         self.extra_rules.append(rule_fn)
 
-
-    #AS Старый метод
-    def score_entity_(self, entity: dict) -> float:
-        """entity: {"surface": ..., "parts": {part1: [...], ...}}"""
-        n = len(self.rules) #AS Добавляем n
-        score = sum(rule(entity["parts"]) for rule in self.rules) if n else 0
-        p = score / n if n else 0.0
-
-        #AS Применяем экстра-правмила extra: 0 игнорируем; ±1 сдвигает p на один «шаг» обычного правила
-        step = 1.0 / n if n else 1.0
-        for rule in self.extra_rules:
-            v = rule(entity["parts"])
-            if v != 0:
-                p += v * step    
-        #AS
-
-        return max(0.0, p)
 
     #AS Метод доработан. 1. Добавлены экстра--правила 2. Добавлены отладочные сообщения    
     def score_entity(self, entity: dict, debug: bool = False) -> float:

@@ -143,51 +143,22 @@ def load_benchmark(path: str) -> pd.DataFrame:
 # ПРЕДСКАЗАНИЕ
 # =============================================================================
 
-def predict_entities_(clean_text: str, engine, threshold: float) -> List[dict]:
-    """Спаны экстрактора в том же формате, что и parse_reference:
-    {"start", "end", "surface", "label"} со смещениями в clean_text.
-
-    `surface` берётся срезом из clean_text (а не dict-форма экстрактора),
-    чтобы сравнение с эталоном и debug-отчёт были согласованы."""
-    spans = predict_spans(clean_text, engine, threshold=threshold)
-    return [
-        {
-            "start": sp["start"],
-            "end": sp["end"],
-            "surface": clean_text[sp["start"]:sp["end"]],
-            "label": sp["type"],
-        }
-        for sp in spans
-        if sp["type"] == "linker"
-    ]
-
-
 def predict_entities(clean_text: str, engine, threshold: float) -> List[dict]:
     """Спаны экстрактора в том же формате, что и parse_reference:
     {"start", "end", "surface", "label"} со смещениями в clean_text.
     
-    AS2: Возвращает как активные линкеры, так и отклонённые для отладки с защитой от None."""
-    
-    # Получаем кортеж. Если predict_spans вернул None вместо кортежа, подстрахуемся
-    raw_res = predict_spans(clean_text, engine, threshold=threshold, with_rejected=True)
-    
-    if raw_res is None:
-        return []
-        
-    # Разворачиваем кортеж
-    spans, rejected = raw_res
-    
-    # AS2: Защита от сценария, когда списки пришли как NoneType
-    if spans is None:
-        spans = []
-    if rejected is None:
-        rejected = []
-        
+    `surface` берётся срезом из clean_text (а не dict-форма экстрактора),
+    чтобы сравнение с эталоном и debug-отчёт были согласованы.
+
+    AS2: Возвращает как активные линкеры, так и отклонённые (is_rejected=True,
+    label "rejected") — последние только для показа в debug-отчёте."""
+    spans, rejected = predict_spans(clean_text, engine, threshold=threshold, with_rejected=True)
+
     result = []
     
     # 1. Действующие линкеры (is_rejected=False)
     for sp in spans:
-        if isinstance(sp, dict) and sp.get("type") == "linker":
+        if sp["type"] == "linker":
             result.append({
                 "start": sp["start"],
                 "end": sp["end"],
@@ -198,17 +169,15 @@ def predict_entities(clean_text: str, engine, threshold: float) -> List[dict]:
             
     # 2. Отклонённые элементы (is_rejected=True)
     for sp in rejected:
-        if isinstance(sp, dict):
-            result.append({
-                "start": sp["start"],
-                "end": sp["end"],
-                "surface": clean_text[sp["start"]:sp["end"]],
-                "label": "other",      # Имя тега для лога ошибок
-                "is_rejected": True    # Сигнал для математики
-            })
-        
-    return result
+        result.append({
+            "start": sp["start"],
+            "end": sp["end"],
+            "surface": clean_text[sp["start"]:sp["end"]],
+            "label": "rejected",   # не "other": в эталоне эта метка значит «не линкер»
+            "is_rejected": True    # Сигнал для математики
+        })
 
+    return result
 
 
 # =============================================================================
@@ -310,13 +279,11 @@ def add_evaluation_columns(df: pd.DataFrame, engine, threshold: float) -> pd.Dat
     records = []
     for text in df["text"].fillna(""):
         clean, ref_ents = parse_reference(text)
-#        pred_ents = predict_entities(clean, engine, threshold)
         # AS2: Получаем полный список сущностей (включая отклонённые)
         pred_ents_all = predict_entities(clean, engine, threshold)
 
         # AS2: Для расчёта метрик и выявления ошибок [ERR] оставляем только НЕотклонённые
         pred_ents = [e for e in pred_ents_all if not e.get("is_rejected", False)]
-
 
         row = evaluate_row(ref_ents, pred_ents)
         row["clean_text"] = clean
@@ -457,12 +424,6 @@ def main() -> pd.DataFrame:
 
     print("Loading stanza pipeline (tokenize,pos,lemma,depparse)...", file=sys.stderr)
     engine = build_engine()
-
-    # #AS2 Просто для ускорения отладки
-    # args.limit=30
-    # args.benchmark = "src/books200.xlsx"
-    # #AS2
-
 
     return process_benchmark(args.benchmark, engine, threshold=args.threshold,
                              n=args.limit, report_path=args.report,
