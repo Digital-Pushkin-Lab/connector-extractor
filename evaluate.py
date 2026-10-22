@@ -143,7 +143,7 @@ def load_benchmark(path: str) -> pd.DataFrame:
 # ПРЕДСКАЗАНИЕ
 # =============================================================================
 
-def predict_entities(clean_text: str, engine, threshold: float) -> List[dict]:
+def predict_entities_(clean_text: str, engine, threshold: float) -> List[dict]:
     """Спаны экстрактора в том же формате, что и parse_reference:
     {"start", "end", "surface", "label"} со смещениями в clean_text.
 
@@ -160,6 +160,55 @@ def predict_entities(clean_text: str, engine, threshold: float) -> List[dict]:
         for sp in spans
         if sp["type"] == "linker"
     ]
+
+
+def predict_entities(clean_text: str, engine, threshold: float) -> List[dict]:
+    """Спаны экстрактора в том же формате, что и parse_reference:
+    {"start", "end", "surface", "label"} со смещениями в clean_text.
+    
+    AS2: Возвращает как активные линкеры, так и отклонённые для отладки с защитой от None."""
+    
+    # Получаем кортеж. Если predict_spans вернул None вместо кортежа, подстрахуемся
+    raw_res = predict_spans(clean_text, engine, threshold=threshold, with_rejected=True)
+    
+    if raw_res is None:
+        return []
+        
+    # Разворачиваем кортеж
+    spans, rejected = raw_res
+    
+    # AS2: Защита от сценария, когда списки пришли как NoneType
+    if spans is None:
+        spans = []
+    if rejected is None:
+        rejected = []
+        
+    result = []
+    
+    # 1. Действующие линкеры (is_rejected=False)
+    for sp in spans:
+        if isinstance(sp, dict) and sp.get("type") == "linker":
+            result.append({
+                "start": sp["start"],
+                "end": sp["end"],
+                "surface": clean_text[sp["start"]:sp["end"]],
+                "label": "linker",
+                "is_rejected": False
+            })
+            
+    # 2. Отклонённые элементы (is_rejected=True)
+    for sp in rejected:
+        if isinstance(sp, dict):
+            result.append({
+                "start": sp["start"],
+                "end": sp["end"],
+                "surface": clean_text[sp["start"]:sp["end"]],
+                "label": "other",      # Имя тега для лога ошибок
+                "is_rejected": True    # Сигнал для математики
+            })
+        
+    return result
+
 
 
 # =============================================================================
@@ -261,19 +310,26 @@ def add_evaluation_columns(df: pd.DataFrame, engine, threshold: float) -> pd.Dat
     records = []
     for text in df["text"].fillna(""):
         clean, ref_ents = parse_reference(text)
-        pred_ents = predict_entities(clean, engine, threshold)
+#        pred_ents = predict_entities(clean, engine, threshold)
+        # AS2: Получаем полный список сущностей (включая отклонённые)
+        pred_ents_all = predict_entities(clean, engine, threshold)
+
+        # AS2: Для расчёта метрик и выявления ошибок [ERR] оставляем только НЕотклонённые
+        pred_ents = [e for e in pred_ents_all if not e.get("is_rejected", False)]
+
 
         row = evaluate_row(ref_ents, pred_ents)
         row["clean_text"] = clean
-        row["pred_markup"] = render_markup(clean, pred_ents)
+        row["pred_markup"] = render_markup(clean, pred_ents_all) #AS2 передаём с отклонёнными
         records.append(row)
 
     evaluation_df = pd.DataFrame(records, index=df.index)
     return df.join(evaluation_df)
 
 
-def evaluate_markup(df: pd.DataFrame) -> dict:
-    """Суммирует числовые колонки оценки и считает P/R по label."""
+#AS2 функция называлась ранее evaluate_markup
+def get_metrics(df: pd.DataFrame) -> dict:
+    """Суммирует числовые колонки оценки и считает P/R/F1/F2 по label."""
     required = [f"{p}_linker" for p in ("tp", "fp", "fn")]
     missing = [c for c in required if c not in df.columns]
     if missing:
@@ -287,19 +343,30 @@ def evaluate_markup(df: pd.DataFrame) -> dict:
         fn = int(df[f"fn_{label}"].sum())
         precision = tp / (tp + fp) if (tp + fp) else 0.0
         recall = tp / (tp + fn) if (tp + fn) else 0.0
-        metrics[label] = {"precision": precision, "recall": recall,
-                         "tp": tp, "fp": fp, "fn": fn}
+        
+        #AS2: Перенесли расчет F1 и F2 из функции печати внутрь логики оценки
+        f1 = (2 * precision * recall) / (precision + recall) if (precision + recall) else 0.0
+        f2 = (5 * precision * recall) / (4 * precision + recall) if (4 * precision + recall) else 0.0
+        
+        #AS2: Добавили f1 и f2 в результирующий словарь для сохранения целостности метрик
+        metrics[label] = {
+            "precision": precision, 
+            "recall": recall,
+            "f1": f1,
+            "f2": f2,
+            "tp": tp, 
+            "fp": fp, 
+            "fn": fn
+        }
     return metrics
-
 
 def print_metrics(metrics: dict) -> None:
     print("Метрики (span-level, micro):")
     print("-" * 60)
     for label in ("linker",):
         m = metrics[label]
-        p, r = m["precision"], m["recall"]
-        f1 = (2 * p * r) / (p + r) if (p + r) else 0.0
-        f2 = (5 * p * r) / (4 * p + r) if (4 * p + r) else 0.0
+        #AS2: Избавились от дублирования формул, теперь просто забираем готовые значения из словаря
+        p, r, f1, f2 = m["precision"], m["recall"], m["f1"], m["f2"]
         print(f"{label:10s}  P={p:.4f}  R={r:.4f}  F1={f1:.4f}  F2={f2:.4f}  "
               f"(tp={m['tp']}, fp={m['fp']}, fn={m['fn']})")
     print("-" * 60)
@@ -334,7 +401,7 @@ def debug_report(df: pd.DataFrame, n: int = 10, file_name: str = "",
                 if not any(f.lower() in clean for f in fragments):
                     continue
 
-            eid = row.get("№ примера", idx)
+            eid = row.get("№ примера", row.get("num", idx+1)) #AS2 разрешим колонке называться num, а индекс-заглушку надо увеличть на 1, так как она итдёт от 0
             to_screen = shown < n
             shown += 1
 
@@ -368,7 +435,7 @@ def process_benchmark(path: str, engine, threshold: float = DEFAULT_THRESHOLD,
     df = add_evaluation_columns(df, engine, threshold)
     print(f"Загружено примеров: {len(df)} из файла {path}")
 
-    print_metrics(evaluate_markup(df))
+    print_metrics(get_metrics(df))
     debug_report(df, n=n, file_name=report_path, status=status)
     return df
 
@@ -380,9 +447,9 @@ def main() -> pd.DataFrame:
                        help=f"Файл с эталонной разметкой (default: {DEFAULT_BENCHMARK}).")
     parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
                        help=f"Порог вероятности экстрактора (default: {DEFAULT_THRESHOLD}).")
-    parser.add_argument("--limit", type=int, default=0,
+    parser.add_argument("--limit", type=int, default=10,
                        help="Сколько строк отчёта печатать на экран (0 — только в файл).")
-    parser.add_argument("--status", default="", choices=["", "OK", "ERR"],
+    parser.add_argument("--status", default="ERR", choices=["", "OK", "ERR"],
                        help="Фильтр строк отчёта по статусу.")
     parser.add_argument("--report", default="src/debug.txt",
                        help="Куда писать полный debug-отчёт.")
@@ -390,6 +457,12 @@ def main() -> pd.DataFrame:
 
     print("Loading stanza pipeline (tokenize,pos,lemma,depparse)...", file=sys.stderr)
     engine = build_engine()
+
+    # #AS2 Просто для ускорения отладки
+    # args.limit=30
+    # args.benchmark = "src/books200.xlsx"
+    # #AS2
+
 
     return process_benchmark(args.benchmark, engine, threshold=args.threshold,
                              n=args.limit, report_path=args.report,

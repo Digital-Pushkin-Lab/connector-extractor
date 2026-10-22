@@ -113,9 +113,11 @@ def rule_pri_etom_dependent(parts):
     words = all_words(parts)
     texts = tuple(w.get("text", "").lower() for w in words)  # tuple, не list
 
+    #AS2 добавили: как 
     triggers = """
     при этом
     в результате
+    как
     как правило
     в то же время
     """
@@ -142,6 +144,7 @@ def rule_pri_etom_dependent(parts):
     return +1
 
 
+        
 
 def rule_phrase_in_list(parts):
     """Правило даёт +1 балл, если оборот в списке. """
@@ -149,26 +152,60 @@ def rule_phrase_in_list(parts):
     # Это немного "читтерское" правило. Оно даёт оборотам +1 балл (0.2) что позволяет таким оборотам "сработать" при одном сработавшем обычном правиле
     # Смысл тут в том, что некоторые обороты являются всегда коннекторами
 
+
+    def in_triggers(string, triggers):
+        """Вспомогательаня внутренняя функция для сокращения кода и повышения удобочитаемости
+        Она проверяет строку из string на попадание в triggers
+        triggers - это строки, разделённые переводом строки
+        """
+        triggers_set = {
+            tuple(line.split())
+            for line in triggers.splitlines()
+            if line.strip()
+        }
+        return string in triggers_set
+
+
+
     words = all_words(parts)
     texts = tuple(w.get("text", "").lower() for w in words)  # tuple, не list
 
+    #AS2 добавляем "однако" и другие
     triggers = """
     затем
     поэтому
     вследствие чего
     после чего
+    однако
+    с целью
+    фактически
+    например
     """
 
-    triggers_set = {
-        tuple(line.split())
-        for line in triggers.splitlines()
-        if line.strip()
-    }
+    if in_triggers(texts, triggers):
+        return 1
+    
 
-    if texts not in triggers_set:
-        return 0
+    #AS2 новый блок +2
+    triggers = """
+    даже
+    """
+    if in_triggers(texts, triggers):
+        return 2
+    
 
-    return 1
+
+
+    #AS2 Добавляем блок. Эти слова штрафуем
+    triggers = """
+    что
+    """
+
+    if in_triggers(texts, triggers):
+        return -3
+
+
+    return 0
 
 
 
@@ -179,7 +216,7 @@ def rule_conjunction_i(parts):
         return 0
 
     w = words[0]
-    if w.get("text", "").lower() != "и":
+    if w.get("text", "").lower() != "и" and w.get("text", "").lower() != "или":
         return 0
 
     # типичные признаки сочинительного союза у Stanza

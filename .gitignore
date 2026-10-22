@@ -9,3 +9,7 @@ env/
 *.egg-info/
 
 .DS_Store
+
+
+src/books200.xlsx
+src/debug*.txt
