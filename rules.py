@@ -117,6 +117,7 @@ def rule_pri_etom_dependent(parts):
     triggers = """
     при этом
     в результате
+    в итоге
     как
     как правило
     в то же время
@@ -181,10 +182,12 @@ def rule_phrase_in_list(parts):
     фактически
     например
     тогда же
+    сразу же
     именно
     в противном случае
     благодаря
     в это же время
+    как будто
     """
 
     if in_triggers(texts, triggers):
@@ -195,6 +198,7 @@ def rule_phrase_in_list(parts):
     даже
     также
     затем
+    тут же
     """
     if in_triggers(texts, triggers):
         return 2

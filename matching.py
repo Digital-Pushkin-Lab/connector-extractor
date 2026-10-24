@@ -148,8 +148,8 @@ def extract_entities_from_sentence(tokens, patterns: Sequence[Pattern], debug = 
 
         for pattern in ordered_patterns:
 
-            # для точки останова
-            if debug and pattern[0][0] == 'дело':
+            # для точки останова. Проверяем сочетание метки debug (которая зависит от предложения) и элемента паттерна, т.е. смотрим в конкретное место двойного цикла
+            if debug and pattern[0][0] == 'т.е.':
                 pass
 
             spans = match_pattern(tokens, i, pattern)

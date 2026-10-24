@@ -165,8 +165,8 @@ def extract_spans(
     for sentence_text, parts, sentence_start, *_ in parsed_sentences:
 
         # для отладки
-        # if "Дело в том" in sentence_text:
-        #     debug=True
+        # if "была принята серия декретов" in sentence_text:
+        #     debug=True    # 'этот параметр инициирует детальный вывод 
         #     pass
 
         # Все части одного razdel-предложения (если stanza разбила его

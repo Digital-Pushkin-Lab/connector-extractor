@@ -311,7 +311,7 @@ def add_evaluation_columns(df: pd.DataFrame, engine, threshold: float) -> pd.Dat
     for text in df["text"].fillna(""):
 
         # для отладки
-        if "Дело в том" in text:
+        if "была принята серия декретов" in text:
             pass 
 
         clean, ref_ents = parse_reference(text)
@@ -474,15 +474,16 @@ def main() -> pd.DataFrame:
     # #AS2
 
 
+    # данная функция отрабатывает бенчмарк и выводит все результаты в лог в файл, если в параметрах скрипта не сказано другого
     df = process_benchmark(args.benchmark, engine, threshold=args.threshold,
                              n=args.limit, report_path=args.report,
                              status=args.status)
     
-    debug_report(df, n=100, status="ERR")
-    # debug_report(df, n=100, fragments=["тогда же"])    
-    # debug_report(df, n=100, fragments=["не как"])    
-    # debug_report(df, n=100, fragments=["именно"])    
-    # debug_report(df, n=100, fragments=["также"])    
+    # а это блок функций, которые по готовому датасету выводят дополнительные отчёты в терминал для отладки. Тут в файл ничего не пишется, так как имя файла не передаётся
+    debug_report(df, n=100, status="ERR") 
+    debug_report(df, n=100, fragments=["и т.д."])    
+#    debug_report(df, n=100, fragments=["наряду с"])    # тут вопрос, надо разбираться со случаями
+#    debug_report(df, n=100, fragments=["благодаря"])    # тут нужно поверять дательный падеж после, но нужны контрпримеры
 #    debug_report(df, n=100, fragments=["затем"])    
 #    debug_report(df, n=100, fragments=["дело в том"])    
 #    debug_report(df, n=100, status="ERR", fragments=["при этом", "в результате"])
