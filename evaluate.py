@@ -143,51 +143,22 @@ def load_benchmark(path: str) -> pd.DataFrame:
 # ПРЕДСКАЗАНИЕ
 # =============================================================================
 
-def predict_entities_(clean_text: str, engine, threshold: float) -> List[dict]:
-    """Спаны экстрактора в том же формате, что и parse_reference:
-    {"start", "end", "surface", "label"} со смещениями в clean_text.
-
-    `surface` берётся срезом из clean_text (а не dict-форма экстрактора),
-    чтобы сравнение с эталоном и debug-отчёт были согласованы."""
-    spans = predict_spans(clean_text, engine, threshold=threshold)
-    return [
-        {
-            "start": sp["start"],
-            "end": sp["end"],
-            "surface": clean_text[sp["start"]:sp["end"]],
-            "label": sp["type"],
-        }
-        for sp in spans
-        if sp["type"] == "linker"
-    ]
-
-
 def predict_entities(clean_text: str, engine, threshold: float) -> List[dict]:
     """Спаны экстрактора в том же формате, что и parse_reference:
     {"start", "end", "surface", "label"} со смещениями в clean_text.
     
-    AS2: Возвращает как активные линкеры, так и отклонённые для отладки с защитой от None."""
-    
-    # Получаем кортеж. Если predict_spans вернул None вместо кортежа, подстрахуемся
-    raw_res = predict_spans(clean_text, engine, threshold=threshold, with_rejected=True)
-    
-    if raw_res is None:
-        return []
-        
-    # Разворачиваем кортеж
-    spans, rejected = raw_res
-    
-    # AS2: Защита от сценария, когда списки пришли как NoneType
-    if spans is None:
-        spans = []
-    if rejected is None:
-        rejected = []
-        
+    `surface` берётся срезом из clean_text (а не dict-форма экстрактора),
+    чтобы сравнение с эталоном и debug-отчёт были согласованы.
+
+    AS2: Возвращает как активные линкеры, так и отклонённые (is_rejected=True,
+    label "rejected") — последние только для показа в debug-отчёте."""
+    spans, rejected = predict_spans(clean_text, engine, threshold=threshold, with_rejected=True)
+
     result = []
     
     # 1. Действующие линкеры (is_rejected=False)
     for sp in spans:
-        if isinstance(sp, dict) and sp.get("type") == "linker":
+        if sp["type"] == "linker":
             result.append({
                 "start": sp["start"],
                 "end": sp["end"],
@@ -198,17 +169,15 @@ def predict_entities(clean_text: str, engine, threshold: float) -> List[dict]:
             
     # 2. Отклонённые элементы (is_rejected=True)
     for sp in rejected:
-        if isinstance(sp, dict):
-            result.append({
-                "start": sp["start"],
-                "end": sp["end"],
-                "surface": clean_text[sp["start"]:sp["end"]],
-                "label": "other",      # Имя тега для лога ошибок
-                "is_rejected": True    # Сигнал для математики
-            })
-        
-    return result
+        result.append({
+            "start": sp["start"],
+            "end": sp["end"],
+            "surface": clean_text[sp["start"]:sp["end"]],
+            "label": "rejected",   # не "other": в эталоне эта метка значит «не линкер»
+            "is_rejected": True    # Сигнал для математики
+        })
 
+    return result
 
 
 # =============================================================================
@@ -309,19 +278,12 @@ def add_evaluation_columns(df: pd.DataFrame, engine, threshold: float) -> pd.Dat
     в колонки df: clean_text, pred_markup, status, tp/fp/fn_items, tp/fp/fn_*."""
     records = []
     for text in df["text"].fillna(""):
-
-        # для отладки
-        if "была принята серия декретов" in text:
-            pass 
-
         clean, ref_ents = parse_reference(text)
-#        pred_ents = predict_entities(clean, engine, threshold)
         # AS2: Получаем полный список сущностей (включая отклонённые)
         pred_ents_all = predict_entities(clean, engine, threshold)
 
         # AS2: Для расчёта метрик и выявления ошибок [ERR] оставляем только НЕотклонённые
         pred_ents = [e for e in pred_ents_all if not e.get("is_rejected", False)]
-
 
         row = evaluate_row(ref_ents, pred_ents)
         row["clean_text"] = clean
@@ -396,11 +358,7 @@ def debug_report(df: pd.DataFrame, n: int = 10, file_name: str = "",
             fh.write(text + "\n")
 
     try:
-        if n:
-            fragments_str = f"; отбор по fragments: {fragments}" if fragments else ""
-            status_str = f"; отбор по status: {status}" if status else ""
-            printf(f"=== debug: всего {len(df)} строк, на экран первые {n}{fragments_str}{status_str} ===")
-
+        printf(f"=== debug: всего {len(df)} строк, на экран первые {n} ===")
         shown = 0
         for idx, row in df.iterrows():
             if status and row["status"] != status:
@@ -427,8 +385,7 @@ def debug_report(df: pd.DataFrame, n: int = 10, file_name: str = "",
                 printf(f"ref:  {row['text']}", to_screen)
             printf(f"pred: {row['pred_markup']}", to_screen)
 
-        if n:
-            printf("=== end debug ===")
+        printf("=== end debug ===")
     finally:
         if fh:
             fh.close()
@@ -457,9 +414,9 @@ def main() -> pd.DataFrame:
                        help=f"Файл с эталонной разметкой (default: {DEFAULT_BENCHMARK}).")
     parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
                        help=f"Порог вероятности экстрактора (default: {DEFAULT_THRESHOLD}).")
-    parser.add_argument("--limit", type=int, default=0,
+    parser.add_argument("--limit", type=int, default=10,
                        help="Сколько строк отчёта печатать на экран (0 — только в файл).")
-    parser.add_argument("--status", default="", choices=["", "OK", "ERR"],
+    parser.add_argument("--status", default="ERR", choices=["", "OK", "ERR"],
                        help="Фильтр строк отчёта по статусу.")
     parser.add_argument("--report", default="src/debug.txt",
                        help="Куда писать полный debug-отчёт.")
@@ -468,27 +425,9 @@ def main() -> pd.DataFrame:
     print("Loading stanza pipeline (tokenize,pos,lemma,depparse)...", file=sys.stderr)
     engine = build_engine()
 
-    # #AS2 Просто для ускорения отладки
-#    args.limit=30
-    args.benchmark = "src/books200.xlsx"
-    # #AS2
-
-
-    # данная функция отрабатывает бенчмарк и выводит все результаты в лог в файл, если в параметрах скрипта не сказано другого
-    df = process_benchmark(args.benchmark, engine, threshold=args.threshold,
+    return process_benchmark(args.benchmark, engine, threshold=args.threshold,
                              n=args.limit, report_path=args.report,
                              status=args.status)
-    
-    # а это блок функций, которые по готовому датасету выводят дополнительные отчёты в терминал для отладки. Тут в файл ничего не пишется, так как имя файла не передаётся
-    debug_report(df, n=100, status="ERR") 
-    debug_report(df, n=100, fragments=["и т.д."])    
-#    debug_report(df, n=100, fragments=["наряду с"])    # тут вопрос, надо разбираться со случаями
-#    debug_report(df, n=100, fragments=["благодаря"])    # тут нужно поверять дательный падеж после, но нужны контрпримеры
-#    debug_report(df, n=100, fragments=["затем"])    
-#    debug_report(df, n=100, fragments=["дело в том"])    
-#    debug_report(df, n=100, status="ERR", fragments=["при этом", "в результате"])
-
-    return df
 
 
 if __name__ == "__main__":
