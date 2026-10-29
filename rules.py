@@ -113,11 +113,15 @@ def rule_pri_etom_dependent(parts):
     words = all_words(parts)
     texts = tuple(w.get("text", "").lower() for w in words)  # tuple, не list
 
+    #AS2 добавили: как 
     triggers = """
     при этом
     в результате
+    в итоге
+    как
     как правило
     в то же время
+    к тому же
     """
 
     triggers_set = {
@@ -170,7 +174,6 @@ def rule_phrase_in_list(parts):
 
     #AS2 добавляем "однако" и другие
     triggers = """
-    затем
     поэтому
     вследствие чего
     после чего
@@ -178,23 +181,49 @@ def rule_phrase_in_list(parts):
     с целью
     фактически
     например
+    тогда же
+    сразу же
+    именно
+    в противном случае
+    благодаря
+    в это же время
+    как будто
     """
 
     if in_triggers(texts, triggers):
         return 1
+    
+    #AS2 новый блок +2
+    triggers = """
+    даже
+    также
+    затем
+    тут же
+    """
+    if in_triggers(texts, triggers):
+        return 2
+    
+
+    #AS2 Добавляем блок. Эти слова штрафуем
+    triggers = """
+    что
+    """
+    if in_triggers(texts, triggers):
+        return -2
+
 
     return 0
 
 
 
 def rule_conjunction_i(parts):
-    """Отдельное «и» / «или»-союз → сильный бонус; иначе 0 (не влияет на знаменатель)."""
+    """Отдельное «и»-союз → сильный бонус; иначе 0 (не влияет на знаменатель)."""
     words = all_words(parts)
     if len(words) != 1:
         return 0
 
     w = words[0]
-    if w.get("text", "").lower() != "и" and w.get("text", "").lower() != "или":
+    if w.get("text", "").lower() != "и" and w.get("text", "").lower() != "или" and w.get("text", "").lower() != "либо":
         return 0
 
     # типичные признаки сочинительного союза у Stanza
@@ -249,6 +278,9 @@ class RuleBasedLinkerChecker:
 
     def score_sentence(self, sentence_json: dict, debug: bool = False) -> List[dict]:
         results = []
+        if debug:
+            print(sentence_json.get('sentence'))
+
         for entity in sentence_json.get("entities", []):
             results.append({
                 "linker": entity["surface"],

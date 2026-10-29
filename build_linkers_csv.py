@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Build data/linkers.csv from Коннекторы_правка_семфилдов.xlsx
+Build data/linkers.tsv from Коннекторы_правка_семфилдов.xlsx
 (Коннекторы_правка.xlsx with the semfield tag corrections applied), which
 is expected next to this repository's directory, alongside the original.
 
@@ -42,7 +42,7 @@ from pathlib import Path
 import openpyxl
 
 DATA_DIR = Path(__file__).parent / "data"
-DEFAULT_OUTPUT = DATA_DIR / "linkers.csv"
+DEFAULT_OUTPUT = DATA_DIR / "linkers.tsv"
 DEFAULT_XLSX = Path(__file__).resolve().parent.parent / "Коннекторы_правка_семфилдов.xlsx"
 
 SHEETS = ["Исходные", "Доп"]
@@ -138,9 +138,10 @@ def parse_args():
 def main():
     args = parse_args()
     linkers = collect_linkers(args.xlsx)
+    delimiter = "\t" if args.output.endswith(".tsv") else ","
 
     with open(args.output, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES, delimiter=delimiter)
         writer.writeheader()
         for entry in linkers:
             writer.writerow({

@@ -37,7 +37,7 @@ MIN_PARAGRAPH_WORDS = 5
 PARAGRAPH_RE = re.compile(r"[^\r\n]+")
 
 DATA_DIR = Path(__file__).parent / "data"
-DEFAULT_LINKERS_CSV = DATA_DIR / "linkers.csv"
+DEFAULT_LINKERS_CSV = DATA_DIR / "linkers.tsv"
 
 
 def load_patterns(linkers_csv: str = None) -> dict:
@@ -156,19 +156,27 @@ def extract_spans(
     patterns_by_type: dict,
     threshold: float = DEFAULT_THRESHOLD,
     return_rejected: bool = False,          # новый параметр
+    debug: bool = False,                    # новый параметр
 ) -> List[dict] | tuple[List[dict], List[dict]]:
     results = []
     rejected = []
 
 
     for sentence_text, parts, sentence_start, *_ in parsed_sentences:
+
+        # для отладки
+        # if "была принята серия декретов" in sentence_text:
+        #     debug=True    # 'этот параметр инициирует детальный вывод 
+        #     pass
+
         # Все части одного razdel-предложения (если stanza разбила его
         # дальше) обрабатываются по отдельности; смещения токенов у всех
         # частей отсчитываются от начала razdel-предложения.
         for tokens in parts:
+
             for type_name, patterns in patterns_by_type.items():
-                sentence_json = sentence_to_json(sentence_text, tokens, patterns)
-                scored = checker.score_sentence(sentence_json)
+                sentence_json = sentence_to_json(sentence_text, tokens, patterns, debug)
+                scored = checker.score_sentence(sentence_json, debug=debug)
                 for entity, score in zip(sentence_json["entities"], scored):
                     # Общий group_id для всех частей одного (возможно, разрывного)
                     # коннектора -- чтобы, например, "если" и "то" из "если...то"

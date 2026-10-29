@@ -68,11 +68,29 @@ def match_part(tokens, start: int, part: Part) -> Optional[int]:
     if start + len(part) > len(tokens):
         return None
 
+    passed = 0 # считаем сколько пропустили
     for i, text in enumerate(part):
-        if tokens[start + i].to_dict()[0]["text"].lower() != text:
+        matched = False
+        for token in tokens[start + i + passed:]: #делаем вложенный цикл, так как нам надо двигаться по токенам, чтобы пропустить запятую
+
+            token_dict = token.to_dict()
+            token_text = token_dict[0]["text"].lower()
+            if i>0 and token_text == ",": #запятую пропускаем для не первого токена в шаблоне
+                passed +=1  # считаем пропущенные
+                continue 
+            if token_text != text:
+                return None
+            
+            matched=True
+            break #проверка пройдена
+        if not matched:
             return None
 
-    return start + len(part)
+    return start + len(part)+passed
+
+
+
+
 
 
 def match_pattern(tokens, start: int, pattern: Pattern) -> Optional[List[Tuple[int, int]]]:
@@ -102,12 +120,19 @@ def match_pattern(tokens, start: int, pattern: Pattern) -> Optional[List[Tuple[i
             if not found:
                 return None
 
+
     return spans
 
 
-def extract_entities_from_sentence(tokens, patterns: Sequence[Pattern]) -> List[dict]:
+def extract_entities_from_sentence(tokens, patterns: Sequence[Pattern], debug = False) -> List[dict]:
     """Greedily find non-overlapping pattern matches in a sentence's tokens,
     longest (most parts, then most words) first."""
+
+
+    # для точки останова
+    if debug:
+        pass
+
     used = [False] * len(tokens)
     results = []
 
@@ -122,6 +147,11 @@ def extract_entities_from_sentence(tokens, patterns: Sequence[Pattern]) -> List[
             continue
 
         for pattern in ordered_patterns:
+
+            # для точки останова. Проверяем сочетание метки debug (которая зависит от предложения) и элемента паттерна, т.е. смотрим в конкретное место двойного цикла
+            if debug and pattern[0][0] == 'т.е.':
+                pass
+
             spans = match_pattern(tokens, i, pattern)
             if spans:
                 parts_json = {}
@@ -143,8 +173,8 @@ def extract_entities_from_sentence(tokens, patterns: Sequence[Pattern]) -> List[
     return results
 
 
-def sentence_to_json(sentence: str, tokens, patterns: Sequence[Pattern]) -> dict:
+def sentence_to_json(sentence: str, tokens, patterns: Sequence[Pattern], debug = False) -> dict:
     return {
         "sentence": sentence,
-        "entities": extract_entities_from_sentence(tokens, patterns),
+        "entities": extract_entities_from_sentence(tokens, patterns, debug),
     }
