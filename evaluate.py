@@ -22,7 +22,7 @@ evaluate.py — оценка экстрактора коннекторов на 
   [x]=other=linker               — двойная метка, верна последняя;
   [x]==linker                    — baseline не нашёл даже омонима;
   метка intro из старых бенчмарков читается как linker;
-  строки, где text начинается с "!" — комментарии, пропускаются.
+  строки, где text начинается с "!" или "#" — комментарии, пропускаются.
 
 Запуск:
   python evaluate.py                         # src/benchmark3_all_linkers.xlsx
@@ -120,11 +120,10 @@ def strip_markup(marked_text: str) -> str:
 # =============================================================================
 # ЗАГРУЗКА БЕНЧМАРКА
 # =============================================================================
-
 def load_benchmark(path: str) -> pd.DataFrame:
     """Читает .tsv / .xlsx с эталонной разметкой.
 
-    Требуется колонка `text`. Строки-комментарии (text начинается с «!»)
+    Требуется колонка `text`. Строки-комментарии (text начинается с «!» или «#»)
     и полностью пустые строки отбрасываются.
     """
     df = read_table(path, as_str=True)
@@ -133,9 +132,11 @@ def load_benchmark(path: str) -> pd.DataFrame:
     if "text" not in df.columns:
         raise ValueError(f"Колонка 'text' не найдена. Есть: {list(df.columns)}")
 
-    df = df[~df["text"].str.startswith("!", na=False)].copy()
-    df = df[df["text"].str.strip() != ""].copy()
-    df.reset_index(drop=True, inplace=True)
+    # Фильтруем комментарии (передаем кортеж строк) и пустые строки
+    is_comment = df["text"].str.startswith(("!", "#"), na=False)
+    is_empty = df["text"].str.strip() == ""
+    
+    df = df[~(is_comment | is_empty)].reset_index(drop=True)
     return df
 
 
@@ -425,9 +426,28 @@ def main() -> pd.DataFrame:
     print("Loading stanza pipeline (tokenize,pos,lemma,depparse)...", file=sys.stderr)
     engine = build_engine()
 
-    return process_benchmark(args.benchmark, engine, threshold=args.threshold,
+    # #AS2 Просто для ускорения отладки
+#    args.limit=30
+    args.benchmark = "src/books200.xlsx"
+#    args.benchmark = "src/wiki.tsv"
+    # #AS2
+
+
+    # данная функция отрабатывает бенчмарк и выводит все результаты в лог в файл, если в параметрах скрипта не сказано другого
+    df = process_benchmark(args.benchmark, engine, threshold=args.threshold,
                              n=args.limit, report_path=args.report,
                              status=args.status)
+    
+    # а это блок функций, которые по готовому датасету выводят дополнительные отчёты в терминал для отладки. Тут в файл ничего не пишется, так как имя файла не передаётся
+    debug_report(df, n=100, status="ERR") 
+#    debug_report(df, n=100, fragments=["ещё", "еще", "прежде всего"])    
+#    debug_report(df, n=100, fragments=["наряду с"])    # тут вопрос, надо разбираться со случаями
+#    debug_report(df, n=100, fragments=["благодаря"])    # тут нужно поверять дательный падеж после, но нужны контрпримеры
+#    debug_report(df, n=100, fragments=["затем"])    
+#    debug_report(df, n=100, fragments=["дело в том"])    
+#    debug_report(df, n=100, status="ERR", fragments=["при этом", "в результате"])
+
+    return df
 
 
 if __name__ == "__main__":
