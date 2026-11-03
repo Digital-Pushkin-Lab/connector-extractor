@@ -6,7 +6,7 @@ Ported from `get_stats` / `get_stats_with_examples` / `get_final_stats` in
 downstream spreadsheets expect (see `summarize_linkers`).
 
 All connectors (including former introductory words) come from a single
-list, `data/linkers.csv`, and are tagged `linker`.
+list, `data/linkers.tsv`, and are tagged `linker`.
 """
 
 from __future__ import annotations
@@ -16,12 +16,17 @@ import re
 import uuid
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import List, NamedTuple, Sequence, Tuple
+from typing import List, NamedTuple, Sequence, Tuple, Dict, Iterable
+
+from dataclasses import dataclass, field
+from tqdm.auto import tqdm
 
 from razdel import sentenize
 
 from matching import Pattern, sentence_to_json
 from patterns import build_patterns_from_csv
+
+
 
 DEFAULT_THRESHOLD = 0.4
 
@@ -41,18 +46,188 @@ DEFAULT_LINKERS_CSV = DATA_DIR / "linkers.tsv"
 
 
 def load_patterns(linkers_csv: str = None) -> dict:
-    """Return {"linker": [...]}: the pattern list built from `linkers_csv`."""
+    """Return {"linker": [...]}: the pattern list built from `linkers_tsv`."""
     linkers_csv = str(linkers_csv or DEFAULT_LINKERS_CSV)
     return {"linker": build_patterns_from_csv(linkers_csv)}
 
 
-class Engine(NamedTuple):
-    """Everything needed to run the extractor on a piece of text: the stanza
-    pipeline, the rule-based scorer and the pattern lists. Build it once
-    (stanza init is slow) and reuse it across texts."""
+
+# Новый класс для оптимизации. Кэширует разбор от stanza, содержит функцию пакетной обработки. 
+# (Пакетная обработка увеличила скорость разбора датасетов сразу на порядок)
+# а также в него перенесена функция parse_sentences() которая теперь смотрит в кэш, в остальном работает как раньше
+@dataclass
+class Engine:
+    """Stanza, scorer, паттерны и кэш разбора предложений."""
+
     nlp: object
     checker: object
     patterns_by_type: dict
+
+    # Текст предложения razdel -> результат Stanza.
+    # Кэш отдельный для каждого экземпляра Engine.
+    _sentence_cache: Dict[str, object] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def preparse_texts(
+        self,
+        texts: Iterable[str],
+        batch_size: int = 32,
+        verbose: bool = False,
+    ) -> None:
+        """Пакетно разобрать отсутствующие в кэше предложения.
+
+        Разбиение на абзацы и предложения совпадает с parse_sentences.
+        В кэш сохраняются только результаты Stanza.
+        Если verbose == True включаестя полоска tqdm
+        """
+        if batch_size <= 0:
+            raise ValueError("batch_size must be greater than zero")
+
+        # Словарь одновременно сохраняет порядок и убирает дубликаты.
+        pending = {}
+
+        for text in texts:
+            if not text or not text.strip():
+                continue
+
+            for para in PARAGRAPH_RE.finditer(text):
+                for sub in sentenize(para.group()):
+                    sentence_text = sub.text
+
+                    if sentence_text not in self._sentence_cache:
+                        pending.setdefault(sentence_text, None)
+
+        sentence_texts = list(pending)
+
+        progress = (
+            tqdm(
+                total=len(sentence_texts),
+                desc="Parsing sentences",
+                unit="text",
+            )
+            if verbose
+            else None
+        )
+
+        try:
+            for start in range(0, len(sentence_texts), batch_size):
+                batch = sentence_texts[start:start + batch_size]
+
+                parsed_docs = list(self.nlp.bulk_process(batch))
+
+                if len(parsed_docs) != len(batch):
+                    raise RuntimeError(
+                        "Stanza returned an unexpected number of documents: "
+                        f"expected {len(batch)}, got {len(parsed_docs)}"
+                    )
+
+                self._sentence_cache.update(zip(batch, parsed_docs))
+
+                if progress is not None:
+                    progress.update(len(batch))
+        finally:
+            if progress is not None:
+                progress.close()
+
+
+    def parse_sentences(
+        self,
+        text: str,
+    ) -> Tuple[List[tuple], int]:
+        """Split `text` into paragraphs and sentences and parse each sentence
+        with stanza once.
+
+        Paragraphs are non-empty lines (see PARAGRAPH_RE). Sentences are found
+        with razdel inside each paragraph, so a sentence never spans two
+        paragraphs. razdel decides the sentence boundaries. stanza's own tokenizer may split
+        a razdel sentence further; in that case every stanza part is kept (and
+        matched separately, since token ids/heads are per stanza sentence), but
+        all parts still belong to the one razdel sentence -- their connectors
+        are counted as coming from the same sentence.
+
+        Returns:
+            parsed_sentences: list of (sentence_text, parts, sentence_start,
+                paragraph, n_words) tuples, one per razdel sentence, reusable
+                across any number of matching passes. `parts` is a list of
+                stanza token lists (usually just one). `sentence_start` is the
+                sentence's character offset in `text`, needed to turn a token's
+                start_char/end_char (relative to the razdel sentence) into an
+                absolute offset (see `extract_spans`). `paragraph` is the
+                0-based index of the sentence's paragraph and `n_words` its
+                number of non-punctuation tokens (see `summarize_linkers`).
+            word_count: number of non-punctuation tokens in `text`, used to
+                normalize the "per 100 words" metrics.
+        """
+        parsed_sentences = []
+        word_count = 0
+        paragraph = 0
+
+        for para in PARAGRAPH_RE.finditer(text):
+            has_sentences = False
+
+            for sub in sentenize(para.group()):
+                sentence_text = sub.text
+
+                if sentence_text not in self._sentence_cache:
+                    # Обычный одиночный вызов остаётся рабочим,
+                    # даже если preparse_texts не вызывался.
+                    self._sentence_cache[sentence_text] = self.nlp(
+                        sentence_text
+                    )
+
+                parsed = self._sentence_cache[sentence_text]
+
+                if parsed.sentences:
+                    parts = [
+                        doc_sentence.tokens
+                        for doc_sentence in parsed.sentences
+                    ]
+
+                    n_words = sum(
+                        1
+                        for tokens in parts
+                        for token in tokens
+                        if token.to_dict()[0]["upos"] != "PUNCT"
+                    )
+
+                    word_count += n_words
+
+                    parsed_sentences.append((
+                        sentence_text,
+                        parts,
+                        para.start() + sub.start,
+                        paragraph,
+                        n_words,
+                    ))
+
+                    has_sentences = True
+
+            if has_sentences:
+                paragraph += 1
+
+        return parsed_sentences, word_count
+
+    def clear_parse_cache(self) -> None:
+        """Освободить результаты разбора."""
+        self._sentence_cache.clear()
+
+
+# Данная функция осталась здесь временно для совместимости как функция-заглушка. 
+# Функционал перенесён внутрь класса Engine() для оптимизации парсинга через пакетную обработку
+def parse_sentences(text: str, nlp) -> Tuple[List[tuple], int]:
+ 
+    print("Вызвана устаревшая функция-обёртка parse_sentences(text: str, nlp). Требуется переписать через engine.parse_sentences(text) !!!")
+
+    # создаём упрощённый Engine без чекера и паттернов, только Stanza
+    engine = Engine(nlp=nlp, checker=None, patterns_by_type=None)
+
+    # вызываем функцию из engine
+    return engine.parse_sentences(text)
+
 
 
 def build_engine(linkers_csv: str = None, nlp=None) -> Engine:
@@ -90,51 +265,6 @@ def round_half_up(value: float, ndigits: int = 1) -> float:
     return float(rounded_decimal)
 
 
-def parse_sentences(text: str, nlp) -> Tuple[List[tuple], int]:
-    """Split `text` into paragraphs and sentences and parse each sentence
-    with stanza once.
-
-    Paragraphs are non-empty lines (see PARAGRAPH_RE). Sentences are found
-    with razdel inside each paragraph, so a sentence never spans two
-    paragraphs. razdel decides the sentence boundaries. stanza's own tokenizer may split
-    a razdel sentence further; in that case every stanza part is kept (and
-    matched separately, since token ids/heads are per stanza sentence), but
-    all parts still belong to the one razdel sentence -- their connectors
-    are counted as coming from the same sentence.
-
-    Returns:
-        parsed_sentences: list of (sentence_text, parts, sentence_start,
-            paragraph, n_words) tuples, one per razdel sentence, reusable
-            across any number of matching passes. `parts` is a list of
-            stanza token lists (usually just one). `sentence_start` is the
-            sentence's character offset in `text`, needed to turn a token's
-            start_char/end_char (relative to the razdel sentence) into an
-            absolute offset (see `extract_spans`). `paragraph` is the
-            0-based index of the sentence's paragraph and `n_words` its
-            number of non-punctuation tokens (see `summarize_linkers`).
-        word_count: number of non-punctuation tokens in `text`, used to
-            normalize the "per 100 words" metrics.
-    """
-    parsed_sentences = []
-    word_count = 0
-    paragraph = 0
-
-    for para in PARAGRAPH_RE.finditer(text):
-        has_sentences = False
-        for sub in sentenize(para.group()):
-            parsed = nlp(sub.text)
-            if parsed.sentences: # ASamsonov - проверяем на наличие предложения
-                parts = [doc_sentence.tokens for doc_sentence in parsed.sentences]
-                n_words = sum(1 for tokens in parts for t in tokens if t.to_dict()[0]["upos"] != "PUNCT")
-                word_count += n_words
-                parsed_sentences.append((sub.text, parts, para.start() + sub.start, paragraph, n_words))
-                has_sentences = True
-        if has_sentences:
-            paragraph += 1
-
-    return parsed_sentences, word_count
-
-
 def analyze_parsed(parsed_sentences: List[tuple], checker, patterns: Sequence[Pattern]) -> List[list]:
     """Run one match+score pass of `patterns` over sentences already parsed
     by `parse_sentences`. Returns one result list per razdel sentence, with
@@ -144,7 +274,7 @@ def analyze_parsed(parsed_sentences: List[tuple], checker, patterns: Sequence[Pa
         scored = []
         for tokens in parts:
             sentence_json = sentence_to_json(sentence_text, tokens, patterns)
-            scored.extend(checker.score_sentence(sentence_json))
+            scored.extend(checker.score_sentence(sentence_json, tokens))
         sentence_results.append(scored)
     return sentence_results
 
@@ -164,8 +294,8 @@ def extract_spans(
 
     for sentence_text, parts, sentence_start, *_ in parsed_sentences:
 
-        # для отладки
-        # if "была принята серия декретов" in sentence_text:
+        # # для отладки
+        # if "Вот тут" in sentence_text:
         #     debug=True    # 'этот параметр инициирует детальный вывод 
         #     pass
 
@@ -176,7 +306,7 @@ def extract_spans(
 
             for type_name, patterns in patterns_by_type.items():
                 sentence_json = sentence_to_json(sentence_text, tokens, patterns, debug)
-                scored = checker.score_sentence(sentence_json, debug=debug)
+                scored = checker.score_sentence(sentence_json, tokens, debug=debug)
                 for entity, score in zip(sentence_json["entities"], scored):
                     # Общий group_id для всех частей одного (возможно, разрывного)
                     # коннектора -- чтобы, например, "если" и "то" из "если...то"
@@ -234,7 +364,8 @@ def predict_spans(text: str,
     if not text or not text.strip():
         return ([], []) if with_rejected else []
 
-    parsed_sentences, _ = parse_sentences(text, engine.nlp)
+#    parsed_sentences, _ = parse_sentences(text, engine.nlp)
+    parsed_sentences, _ = engine.parse_sentences(text)    
     result = extract_spans(
         parsed_sentences,
         engine.checker,

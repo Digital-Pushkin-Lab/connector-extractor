@@ -7,7 +7,7 @@ column. Output: a table with one row per sentence:
 
     text_id     -- row number of the text in the input table (1 = first text)
     sentence    -- the sentence (razdel, within a paragraph; see
-                   `pipeline.parse_sentences`)
+                   `engine.parse_sentences`, class Engine in pipilene.py)
     connectors  -- connectors found in the sentence, in order of appearance,
                    separated by "; " (a discontinuous connector is listed
                    once, e.g. "если...то")
@@ -40,7 +40,7 @@ CONNECTOR_SEP = "; "
 
 def sentence_rows(text_id: int, text: str, engine, threshold: float) -> list:
     """One {"text_id", "sentence", "connectors"} dict per sentence of `text`."""
-    parsed_sentences, word_count = parse_sentences(text, engine.nlp)
+    parsed_sentences, word_count = engine.parse_sentences(text)
     results = analyze_parsed(parsed_sentences, engine.checker, engine.patterns_by_type["linker"])
     by_sentence = summarize_linkers(results, threshold, word_count)["linkers_by_appearance"]
 
