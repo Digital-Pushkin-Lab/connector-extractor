@@ -9,6 +9,196 @@ Ported from `RuleBasedLinkerChecker` and its `rule_*` functions in
 from typing import Callable, Dict, List
 
 
+from pyroaring import BitMap
+
+
+class BitFlag:
+    """Булев атрибут, хранящий значение в bitmap."""
+
+    def __init__(self, feature_id: int):
+        self.feature_id = feature_id
+
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
+        return self.feature_id in instance._bits
+
+    def __set__(self, instance, value: bool):
+        if not isinstance(value, bool):
+            raise TypeError("Значение признака должно быть bool")
+
+        if value:
+            instance._bits.add(self.feature_id)
+        else:
+            instance._bits.discard(self.feature_id)
+
+
+class TokenFeatures:
+    """Бинарные признаки токена с доступом через атрибуты."""
+
+    __slots__ = ("_bits",)
+
+    # ID признаков должны оставаться постоянными.
+    Is_PunctBefore = ЕстьПунктуацияПеред = BitFlag(0)
+    Is_IntroductoryPotential = ПотенциальноВводное = BitFlag(1)
+    Is_NoSpaceAfter = НетПробелаПосле = BitFlag(2)
+    Is_DependentAfter = ЕстьЗависимоеПосле = BitFlag(3)
+    Is_HeadFollowingNoun = ГлавноеСуществительноеСправа = BitFlag(4)
+
+    def __init__(self):
+        self._bits = BitMap()
+
+
+
+class Token:
+    # Известные флаги, пока оставим для истории.
+    # _MISC_FEATURES = {
+    #     "PunctBefore=Yes": "Is_PunctBefore",
+    #     "IntroductoryPotential=Yes": "Is_IntroductoryPotential",
+    #     "SpaceAfter=No": "Is_NoSpaceAfter",
+    #     "DependentAfter=Yes": "Is_DependentAfter",
+    #     "HeadIsFollowingNoun=Yes": "Is_HeadFollowingNoun",
+    # }
+
+    def __init__(self, token_stanza, tokens):
+        self.st = token_stanza    # Stanza или Stanza Token (для Spacy Token, впрочем, будет sp)
+        self.std_ = token_stanza.to_dict()
+        self.std = self.std_[0]   # Stanza Dict - станза-токен, превращённый словарь
+
+        self.text = token_stanza.text
+        self.s = self.text.lower()   #часто нужно в нижем регистре, возможно тут требуется дополнительно отчистить от, например, знаков ударения
+        self.tokens = tokens         # ключевой момент. Токены исходного предложения с типом Token
+
+        # Вычисляются вместе при первом обращении.
+        self.info = None # здесь были признаки токена. Оставили для совместимости. Фактически здесь теперь self.std
+        self._f = None  # это признаки токена. Они зависят от соседей, поэтомы мы их вычислить в конструкторе не можем
+
+    @property
+    def f(self) -> TokenFeatures:
+        """Признаки токена с ленивым вычислением."""
+        if self._f is None:
+            self.assemble_token_info()
+        return self._f
+
+    def index(self):
+        return self.tokens.index(self)
+
+    @property
+    def prev(self):
+        i = self.index()
+        if i == 0:
+            return None
+        return self.tokens[i - 1]
+
+    @property
+    def next(self):
+        i = self.index()
+        if i == len(self.tokens) - 1:
+            return None
+        return self.tokens[i + 1]
+
+    @property
+    def lemma(self):
+        return self.st.words[0].lemma if self.st.words else None
+
+    @property
+    def upos(self):
+        return self.st.words[0].upos if self.st.words else None
+
+    def __repr__(self):
+        return (
+            f"Token(text={self.text!r}, "
+            f"lemma={self.lemma!r}, "
+            f"upos={self.upos!r})"
+        )
+
+    def __str__(self):
+        return self.__repr__()
+
+    # Для совместимости с существующим кодом.
+    def to_dict(self):
+        return self.std_
+
+    def get_info(self) -> dict:
+        return self.assemble_token_info()
+
+    def get(self, key, default=None):
+        return self.get_info().get(key, default)
+
+    def __getitem__(self, key):
+        return self.get_info()[key]
+
+    def assemble_token_info(self) -> dict:
+        """Возвращает словарь Stanza и вычисляет признаки токена.
+
+        Кэширует:
+        - self.info — копию исходного словаря Stanza;
+        - self._f — объект TokenFeatures с bitmap внутри.
+
+        misc не читается и не изменяется.
+        """
+        if self.info is not None:
+            return self.info
+
+        token_position = self.index()
+        tokens = self.tokens
+
+        basic_info_dict = self.std.copy()
+        features = TokenFeatures()
+
+        prev_token = self.prev
+        next_token = self.next
+
+        # Условие сохранено из исходного класса: позиция >= 2.
+        if token_position >= 2 and prev_token.upos == "PUNCT":
+            features.Is_PunctBefore = True
+
+        if token_position >= 1 and token_position < len(tokens) - 2:
+            prev_lemma = prev_token.lemma
+            next_lemma = next_token.lemma
+            next_next_upos = next_token.next.upos
+
+            if (
+                prev_lemma in {"а", "и"}
+                or (next_lemma == "же" and next_next_upos == "PUNCT")
+            ):
+                features.Is_IntroductoryPotential = True
+
+        if next_token is None or next_token.upos == "PUNCT":
+            features.Is_NoSpaceAfter = True
+
+        this_id = basic_info_dict.get("id")
+        head_id = basic_info_dict.get("head", 0)
+
+        # Есть зависимый токен справа, не считая пунктуации.
+        for j in range(token_position + 1, len(tokens)):
+            std = tokens[j].std
+
+            if std.get("upos") == "PUNCT":
+                continue
+
+            if this_id is not None and std.get("head") == this_id:
+                features.Is_DependentAfter = True
+                break
+
+        # Главное слово справа — существительное или имя собственное.
+        for j in range(token_position + 1, len(tokens)):
+            std = tokens[j].std
+
+            if (
+                head_id
+                and std.get("id") == head_id
+                and std.get("upos") in {"NOUN", "PROPN"}
+            ):
+                features.Is_HeadFollowingNoun = True
+                break
+
+        self._f = features
+        self.info = basic_info_dict
+
+        return self.info
+
+
 def all_words(parts: Dict[str, list]) -> list:
     return [w for part in parts.values() for w in part]
 
@@ -19,7 +209,7 @@ def parts_list(parts: Dict[str, list]) -> list:
 
 def rule_single_part_only_part(parts):
     words = all_words(parts)
-    if len(words) == 1 and words[0]["upos"] == "PART":
+    if len(words) == 1 and words[0].upos == "PART":
         return -1
     return 0
 
@@ -52,24 +242,22 @@ def rule_dependency_signal(parts):
 
 def rule_no_space_after(parts):
     for w in all_words(parts):
-        if w.get("misc", None):
-            if "SpaceAfter=No" in w["misc"]:
-                return +1
+        if w.f.Is_NoSpaceAfter:
+            return +1
     return 0
 
 
 def rule_pos_per_part(parts):
     for part in parts_list(parts):
-        if not any(w["upos"] in {"SCONJ", "CCONJ", "ADV"} for w in part):
+        if not any(w.upos in {"SCONJ", "CCONJ", "ADV"} for w in part):
             return 0
     return +1
 
 
 def rule_punct_before(parts):
     for part in parts_list(parts):
-        if part[0].get("misc", None):
-            if "PunctBefore=Yes" in part[0]["misc"]:
-                return +1
+        if part and part[0].f.Is_PunctBefore:
+            return +1
     return 0
 
 
@@ -82,26 +270,31 @@ def rule_pron_after_adp(parts):
     return 0
 
 
-def rule_my_head_is_next_tokens_id(parts):
-    for part in parts_list(parts):
-        for i, w in enumerate(part):
-            if i < len(part) - 1:
-                if w["head"] == part[i + 1]["id"]:
-                    return +1
-    return 0
+# Не используется
+# def rule_my_head_is_next_tokens_id(parts):
+#     for part in parts_list(parts):
+#         for i, w in enumerate(part):
+#             if i < len(part) - 1:
+#                 if w["head"] == part[i + 1]["id"]:
+#                     return +1
+#     return 0
 
 
 def rule_introductory_potential(parts):
     """A trailing particle 'же' (up to the following comma), or a leading
     'а'/'и', is tolerated around an introductory construction."""
     for part in parts_list(parts):
-        if part[0].get("misc", None):
-            if "IntroductoryPotential=Yes" in part[0]["misc"]:
-                return +1
-        elif part[-1].get("misc", None):
-            if "IntroductoryPotential=Yes" in part[-1]["misc"]:
-                return +1
+        if not part:
+            continue
+
+        if (
+            part[0].f.Is_IntroductoryPotential
+            or part[-1].f.Is_IntroductoryPotential
+        ):
+            return +1
+
     return 0
+         
 
 
 # используем также в markup.py
@@ -154,17 +347,12 @@ def rule_pri_etom_dependent(parts):
         return 0
 
     last = words[-1]
-    misc = last.get("misc") or ""
 
-    has_dep = (
-        "DependentAfter=Yes" in misc  # кто-то зависимый справа смотрит на нас  
-        or "HeadIsFollowingNoun=Yes" in misc  # после нас существительное, от которого мы зависим: При этом императоре
-    )
+    has_dep = last.f.Is_DependentAfter or last.f.Is_HeadFollowingNoun
 
     if has_dep:
         return -1
     return +1
-
 
         
 
@@ -186,7 +374,6 @@ def rule_phrase_in_list(parts):
     вследствие чего
     после чего
     однако
-    с целью
     фактически
     например
     тогда же
@@ -204,7 +391,8 @@ def rule_phrase_in_list(parts):
     в дальнейшем
     интересно
     же
-    в той же, в том же, в тех же, в тот же, в ту же, в того же, в этот же, в этом же, в этой же, в этих же # ряд однотипных выражений. не все из них пока в коннекторах. Вероятно, надо смотреть лемму
+    в тот же
+#    наряду с  # надо разбираться со случаями употребления
     """
 
 
@@ -217,7 +405,7 @@ def rule_phrase_in_list(parts):
     даже
     также
     затем
-    тут же
+    с целью
     на сей раз
     вот # см. books446
     """
@@ -231,7 +419,6 @@ def rule_phrase_in_list(parts):
     """
     if in_triggers(texts, triggers):
         return -2
-
 
     return 0
 
@@ -261,67 +448,36 @@ def rule_special(parts):
     if not words:
         return 0
 
-    for w in words:
-        word_text = w.get("text", "").lower()
+    string =  " ".join(w.get("text", "").lower() for w in words)
+
+
+    if len(words)==1 and words[0].s=="же":
+        w = words[0]
         w_id = w.get("id", 1)
 
-        
-       # =================================================================
-        # БЛОК 1: ЧАСТИЦА "ЖЕ"
-        # =================================================================
-        if word_text == "же":
-            prev = w.prev()
+        prev = w.prev
 
-            if prev is not None:
-                prev_token = prev.ts
+        if prev:
 
-                if prev_token.words:
-                    prev_word = prev_token.words[0]
-                    prev_lemma = prev_word.lemma.lower() if prev_word.lemma else ""
-                    prev_upos = prev_word.upos
+            # Жесткие текстовые исключения с добавлением лемм "том" и "тех"
+            if prev.lemma in {
+                "тот", "том", "тех", "такой", "так", "один", "то",
+                "тут", "тот же", "такой же", "факт",
+            }:
+                return -3
 
-                    prev_prev = prev.prev()
-                    prev_prev_token = (
-                        prev_prev.ts if prev_prev is not None else None
-                    )
+            if prev.upos in {"NOUN", "PRON", "PROPN", "DET"} or prev.lemma == "сам":
+                if w_id <= 4:
+                    return +2
 
-                    # Контекстный перехват "В том же..." до блока штрафов.
-                    if prev_lemma in {"тот", "том", "тех", "то"}:
-                        if (
-                            prev_prev_token is not None
-                            and prev_prev_token.text.lower() == "в"
-                        ):
-                            return +2
 
-                    # 1. Жесткие текстовые исключения.
-                    if prev_lemma in {
-                        "тот", "такой", "так", "один", "то",
-                        "тут", "тот же", "такой же", "факт",
-                    }:
-                        return -3
-
-                    # 2. Главный критерий линкера: стоит строго
-                    # на 2, 3 или 4 месте после имени/местоимения.
-                    if prev_upos in {"NOUN", "PRON", "PROPN", "DET"} or prev_lemma == "сам":
-                        if w_id <= 4:
-                            return +2
-
-                    # 3. Подстраховка для БСП: перед предыдущим
-                    # словом стоит знак препинания.
-                    if prev_prev_token is not None and prev_prev_token.words:
-                        punct_word = prev_prev_token.words[0]
-                        if (
-                            punct_word.upos == "PUNCT"
-                            and prev_prev_token.text in {":", "—", ";", ","}
-                        ):
-                            if prev_upos in {"NOUN", "PRON", "PROPN", "DET"}:
-                                return +2
+            if prev.prev and prev.prev.text in [":", "—", ";", ","]:
+                if prev.upos in {"NOUN", "PRON", "PROPN", "DET"}:
+                        return +2
 
             return 0
 
     return 0
-
-
 
 def rule_time_connector(parts):
     """Единое правило валидации синтаксического контекста для временных 
@@ -337,76 +493,69 @@ def rule_time_connector(parts):
     
 
     # 1. Находим конкретный токен дейктика внутри списка слов спана
-    target_word = None
+    word = None
     for w in words:
-        if w.get("lemma", "").lower() in time_deictic_lemmas:
-            target_word = w
+        if w.lemma in time_deictic_lemmas:
+            word = w
             break
             
-    if not target_word:
+    if not word:
         return 0
 
-    if words[0].tokens[0].text == "Если":
-        print(tokens2sent(words[0].tokens))
+    if words[0].tokens[0].text == "Если": # первый токен предложения
+#        print(tokens2sent(words[0].tokens))
         pass    
 
     # 2. Безусловный бонус для известных устойчивых сочетаний
-    surface_lower = " ".join(w.get("text", "").lower() for w in words)
+    surface_lower = " ".join(w.s for w in words)
     if surface_lower in {"тогда же", "теперь же", "сейчас же", "сразу же"}:
         return +1
 
     # Безопасно извлекаем базовые свойства найденного токена
-    misc = target_word.get("misc") or ""
-    w_id = target_word.get("id", 1)
-    deprel = target_word.get("deprel", "")
-    upos = target_word.get("upos", "")
+#    misc = word.get("misc") or ""
+    w_id = word.get("id", 1)
+    deprel = word.get("deprel", "")
+    upos = word.upos
     
+
     w_idx = w_id - 1  # 0-based индекс в tokens
 
-    # -----------------------------------------------------------------
     # ПРИОРИТЕТНЫЙ БЛОК: ЖЕЛЕЗНЫЕ ПРИЗНАКИ НАЧАЛА (Решает стр. 388)
-    # -----------------------------------------------------------------
     if w_id == 1:
         return +2
 
     tokens = words[0].tokens # пока так
-    # -----------------------------------------------------------------
-    # СИНТАКСИЧЕСКИЙ АНАЛИЗ КОНТЕКСТА ЧЕРЕЗ TOKENS
-    # -----------------------------------------------------------------
+
+    # СИНТАКСИЧЕСКИЙ АНАЛИЗ КОНТЕКСТА 
     if 0 <= w_idx < len(tokens):
         
-        # ИСПРАВЛЕНО: берём первый элемент списка words -> words[0]
-        if w_idx > 0 and tokens[w_idx - 1].ts.words:
-            prev_word = tokens[w_idx - 1].ts.words[0]
-            if prev_word.lemma and prev_word.lemma.lower() == "то":
-                return +2
+        if word.prev and word.prev.lemma == "то":
+            return +2
 
         # ИСПРАВЛЕНО: берём первый элемент списка words -> words[0]
-        head_id = target_word.get("head", 0)
+        head_id = word.get("head", 0)
         head_idx = head_id - 1
-        if 0 <= head_idx < len(tokens) and tokens[head_idx].ts.words:
-            head_word = tokens[head_idx].ts.words[0]
+        if 0 <= head_idx < len(tokens) and tokens[head_idx].st.words:
+            head_word = tokens[head_idx].st.words[0]
             if head_word.feats and "VerbForm=Part" in str(head_word.feats):
                 return -3  # Сильный штраф гарантированно превратит случай в [OK] как other
 
         # Исправление стр. 413: Вытягиваем БСП (поиск знака препинания двоеточия/тире слева)
         for i in range(w_idx - 1, -1, -1):
-            if tokens[i].ts.words and tokens[i].ts.words[0].upos == "PUNCT":
+            if tokens[i].upos == "PUNCT":
                 punct_text = tokens[i].text
                 if punct_text in {":", "—", ";"}:
                     return +2  # Это начало новой части в БСП, даем весомый бонус
                 if punct_text in {".", "!", "?"}:
                     break  # Граница предложения, останавливаемся
 
-    # -----------------------------------------------------------------
     # СТАНДАРТНЫЕ ФОЛБЕКИ (для обратной совместимости)
-    # -----------------------------------------------------------------
-    if upos == "ADJ" or "HeadIsFollowingNoun=Yes" in misc or "DependentAfter=Yes" in misc:
+    if upos == "ADJ" or word.f.Is_HeadFollowingNoun or word.f.Is_DependentAfter:
         return -1
 
-    if w_id == 2 or "IntroductoryPotential=Yes" in misc or "PunctBefore=Yes" in misc:
+    if w_id == 2 or word.f.Is_IntroductoryPotential or word.f.Is_PunctBefore:
         return +1
-
+    
     if deprel in {"parataxis", "discourse", "cc", "mark", "fixed"}:
         return +1
 
@@ -504,13 +653,14 @@ def tokens2sent(tokens) -> str:
     for i, token in enumerate(tokens):
         text = token.text
         # Безопасно приводим misc к строке, даже если там None или dict
-        misc = str(token.ts.misc) if token.ts.misc else ""
+        misc = str(token.st.misc) if token.st.misc else ""
         
         result.append(text)
         
+
         # Базовая проверка Stanza на отсутствие пробела ПОСЛЕ текущего токена
-        if "SpaceAfter=No" in misc:
-            continue
+        if token.f.Is_NoSpaceAfter:
+            continue        
             
         # Умная лингвистическая подстраховка для знаков препинания:
         # Если следующий токен — это запятая, точка, двоеточие, закрывающая кавычка или скобка,

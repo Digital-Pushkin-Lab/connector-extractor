@@ -152,7 +152,7 @@ def predict_entities(clean_text: str, engine, threshold: float) -> List[dict]:
     `surface` берётся срезом из clean_text (а не dict-форма экстрактора),
     чтобы сравнение с эталоном и debug-отчёт были согласованы.
 
-    AS2: Возвращает как активные линкеры, так и отклонённые (is_rejected=True)
+    Возвращает как активные линкеры, так и отклонённые (is_rejected=True)
     """
     spans, rejected = predict_spans(clean_text, engine, threshold=threshold, with_rejected=True)
 
@@ -512,9 +512,9 @@ def main() -> pd.DataFrame:
                              status=args.status)
     
     # а это блок функций, которые по готовому датасету выводят дополнительные отчёты в терминал для отладки. Тут в файл ничего не пишется, так как имя файла не передаётся
-    #debug_report(df, n=100, status="ERR") 
+    debug_report(df, n=100, status="ERR") 
 
-    debug_report(df, n=100, patterns=["Интересно"])   
+    debug_report(df, n=100, patterns=["с целью"])   
 
 #    debug_report(df, n=100, fragments=["тогда", "теперь"])   
 
@@ -522,11 +522,11 @@ def main() -> pd.DataFrame:
 
 #    debug_report(df, n=100, fragments=["лучше"])   
 #    debug_report(df, n=100, fragments=["то есть"])   
-    #debug_report(df, n=100, fragments=["в том же"])     # тут надо разбираться Пример books326 
-    #debug_report(df, n=100, fragments=["тут же"])     # тут надо разбираться Пример books360 
+#    debug_report(df, n=100, fragments=["в том же"])     # тут надо разбираться Пример books326 
+#    debug_report(df, n=100, fragments=["тут же"])     # тут надо разбираться Пример books360 
     #debug_report(df, n=100, fragments=["тогда", "теперь"])    # тут написано отдельное общее правило
 #    debug_report(df, n=100, fragments=["ещё", "еще", "прежде всего"])    
-#    debug_report(df, n=100, fragments=["наряду с"])    # тут вопрос, надо разбираться со случаями
+    debug_report(df, n=100, fragments=["наряду с"])    # тут вопрос, надо разбираться со случаями
 #    debug_report(df, n=100, fragments=["благодаря"])    # тут нужно поверять дательный падеж после, но нужны контрпримеры
 #    debug_report(df, n=100, fragments=["затем"])    
 #    debug_report(df, n=100, fragments=["дело в том"])    
