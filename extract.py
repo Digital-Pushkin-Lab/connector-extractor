@@ -31,7 +31,7 @@ from pipeline import (
     analyze_parsed,
     build_engine,
     load_patterns,  # noqa: F401  (re-exported for callers that still `from extract import load_patterns`)
-    parse_sentences,
+#    parse_sentences, больше не используем, вызываем из engine.parse_sentences()
     summarize_linkers,
 )
 from tables import pick_text_column, read_table, write_table
@@ -87,9 +87,9 @@ def get_ext(file_name):
     return Path(file_name).suffix
 
 
-def run_single(text, patterns_by_type, nlp, checker, threshold, output_path):
-    parsed_sentences, word_count = parse_sentences(text, nlp)
-    stats = compute_stats(parsed_sentences, patterns_by_type, checker, threshold, word_count)
+def run_single(text, engine, threshold, output_path):
+    parsed_sentences, word_count = engine.parse_sentences(text)
+    stats = compute_stats(parsed_sentences, engine.patterns_by_type, engine.checker, threshold, word_count)
 
     if output_path and get_ext(output_path).lower() in TABLE_EXTENSIONS:
         # те же колонки, что и у строки пакетного режима: текст + статистика
@@ -105,7 +105,7 @@ def run_single(text, patterns_by_type, nlp, checker, threshold, output_path):
         print(output_json)
 
 
-def run_batch(input_csv, text_column, output_path, patterns_by_type, nlp, checker, threshold):
+def run_batch(input_csv, text_column, output_path, engine, threshold):
     # Reads .csv (comma) or .tsv/.txt/.xlsx (tab / sheet); see tables.read_table.
     df = read_table(input_csv)
 
@@ -117,10 +117,29 @@ def run_batch(input_csv, text_column, output_path, patterns_by_type, nlp, checke
         sys.exit(f"{input_csv}: {e}")
     print(f"Reading texts from column '{text_column}'", file=sys.stderr)
 
-    for _, row in tqdm(df.iterrows(), total=len(df), desc="Analyzing"):
-        text = str(row[text_column]) if pd.notna(row[text_column]) else ""
-        parsed_sentences, word_count = parse_sentences(text, nlp)
-        rows.append(compute_stats(parsed_sentences, patterns_by_type, checker, threshold, word_count))
+
+    texts = [
+            str(value) if pd.notna(value) else ""
+            for value in df[text_column]
+        ]
+
+    # Пакетный разбор Stanza и заполнение кэша.
+    engine.preparse_texts(texts, batch_size=64, verbose=True)
+
+
+    # Разборы уже находятся в кэше engine.
+    for text in tqdm(texts, total=len(texts), desc="Analyzing"):
+        parsed_sentences, word_count = engine.parse_sentences(text)
+
+        rows.append(
+            compute_stats(
+                parsed_sentences,
+                engine.patterns_by_type,
+                engine.checker,
+                threshold,
+                word_count,
+            )
+        )
 
     stats_df = pd.DataFrame(rows)
     result_df = pd.concat([df.reset_index(drop=True), stats_df], axis=1)
@@ -142,18 +161,24 @@ def table_input(args):
     return None
 
 
-def run(args, patterns_by_type, nlp, checker):
+def run(args, engine):
     """Dispatch to batch or single-text mode based on `args`."""
     table = table_input(args)
     if table:
-        run_batch(table, args.text_column, args.output, patterns_by_type, nlp, checker, args.threshold)
+        run_batch(table, args.text_column, args.output, engine, args.threshold)
     else:
         text = args.text if args.text is not None else Path(args.input_file).read_text(encoding="utf-8")
-        run_single(text, patterns_by_type, nlp, checker, args.threshold, args.output)
+        run_single(text, engine, args.threshold, args.output)
 
 
 def main():
     args = parse_args()
+
+    # # для отлдки
+    # if not args.input_file:
+    #     args.input_file = "src/books_.tsv"
+    # if not args.output:
+    #     args.output = "src/result.tsv"
 
     table = table_input(args)
     if table and not args.output:
@@ -164,7 +189,7 @@ def main():
     print("Loading stanza pipeline (tokenize,pos,lemma,depparse)...", file=sys.stderr)
     engine = build_engine(args.linkers_csv)
 
-    run(args, engine.patterns_by_type, engine.nlp, engine.checker)
+    run(args, engine)
 
 
 if __name__ == "__main__":

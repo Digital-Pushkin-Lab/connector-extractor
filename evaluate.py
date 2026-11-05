@@ -22,7 +22,7 @@ evaluate.py — оценка экстрактора коннекторов на 
   [x]=other=linker               — двойная метка, верна последняя;
   [x]==linker                    — baseline не нашёл даже омонима;
   метка intro из старых бенчмарков читается как linker;
-  строки, где text начинается с "!" — комментарии, пропускаются.
+  строки, где text начинается с "!" или "#" — комментарии, пропускаются.
 
 Запуск:
   python evaluate.py                         # src/benchmark3_all_linkers.xlsx
@@ -36,6 +36,7 @@ import sys
 from typing import List, Optional, Tuple
 
 import pandas as pd
+import time
 
 from pipeline import DEFAULT_THRESHOLD, build_engine, predict_spans
 from tables import read_table
@@ -120,11 +121,10 @@ def strip_markup(marked_text: str) -> str:
 # =============================================================================
 # ЗАГРУЗКА БЕНЧМАРКА
 # =============================================================================
-
 def load_benchmark(path: str) -> pd.DataFrame:
     """Читает .tsv / .xlsx с эталонной разметкой.
 
-    Требуется колонка `text`. Строки-комментарии (text начинается с «!»)
+    Требуется колонка `text`. Строки-комментарии (text начинается с «!» или «#»)
     и полностью пустые строки отбрасываются.
     """
     df = read_table(path, as_str=True)
@@ -133,9 +133,11 @@ def load_benchmark(path: str) -> pd.DataFrame:
     if "text" not in df.columns:
         raise ValueError(f"Колонка 'text' не найдена. Есть: {list(df.columns)}")
 
-    df = df[~df["text"].str.startswith("!", na=False)].copy()
-    df = df[df["text"].str.strip() != ""].copy()
-    df.reset_index(drop=True, inplace=True)
+    # Фильтруем комментарии (передаем кортеж строк) и пустые строки
+    is_comment = df["text"].str.startswith(("!", "#"), na=False)
+    is_empty = df["text"].str.strip() == ""
+    
+    df = df[~(is_comment | is_empty)].reset_index(drop=True)
     return df
 
 
@@ -150,8 +152,8 @@ def predict_entities(clean_text: str, engine, threshold: float) -> List[dict]:
     `surface` берётся срезом из clean_text (а не dict-форма экстрактора),
     чтобы сравнение с эталоном и debug-отчёт были согласованы.
 
-    AS2: Возвращает как активные линкеры, так и отклонённые (is_rejected=True,
-    label "rejected") — последние только для показа в debug-отчёте."""
+    Возвращает как активные линкеры, так и отклонённые (is_rejected=True)
+    """
     spans, rejected = predict_spans(clean_text, engine, threshold=threshold, with_rejected=True)
 
     result = []
@@ -173,7 +175,7 @@ def predict_entities(clean_text: str, engine, threshold: float) -> List[dict]:
             "start": sp["start"],
             "end": sp["end"],
             "surface": clean_text[sp["start"]:sp["end"]],
-            "label": "rejected",   # не "other": в эталоне эта метка значит «не линкер»
+            "label": "other",      # именно other для разметки не линкеров
             "is_rejected": True    # Сигнал для математики
         })
 
@@ -276,22 +278,58 @@ def render_markup(clean_text: str, entities: List[dict]) -> str:
 def add_evaluation_columns(df: pd.DataFrame, engine, threshold: float) -> pd.DataFrame:
     """Прогоняет экстрактор по каждой строке и сохраняет результат оценки
     в колонки df: clean_text, pred_markup, status, tp/fp/fn_items, tp/fp/fn_*."""
-    records = []
+
+    # Данная функция получила пакетную обработку текстов в кэш для оптимизации по скорости
+    prepared_rows = []
+
+    # Очищаем тексты и получаем эталонные сущности.
     for text in df["text"].fillna(""):
         clean, ref_ents = parse_reference(text)
-        # AS2: Получаем полный список сущностей (включая отклонённые)
-        pred_ents_all = predict_entities(clean, engine, threshold)
+        prepared_rows.append((clean, ref_ents))
 
-        # AS2: Для расчёта метрик и выявления ошибок [ERR] оставляем только НЕотклонённые
-        pred_ents = [e for e in pred_ents_all if not e.get("is_rejected", False)]
+    # Только Stanza: пакетный парсинг в кэш.
+    engine.preparse_texts(
+        (clean for clean, _ in prepared_rows),
+        batch_size=32,
+        verbose = True,
+    )
+
+    # Прежний путь извлечения и оценки.
+    records = []
+
+    for clean, ref_ents in prepared_rows:
+
+        # Для отладки.
+        if "Вот тут-то" in clean:
+            pass
+
+        pred_ents_all = predict_entities(
+            clean,
+            engine,
+            threshold,
+        )
+
+        # Для метрик оставляем только неотклонённые элементы.
+        pred_ents = [
+            entity
+            for entity in pred_ents_all
+            if not entity.get("is_rejected", False)
+        ]
 
         row = evaluate_row(ref_ents, pred_ents)
         row["clean_text"] = clean
-        row["pred_markup"] = render_markup(clean, pred_ents_all) #AS2 передаём с отклонёнными
+
+        # В разметке сохраняем также отклонённые элементы.
+        row["pred_markup"] = render_markup(
+            clean,
+            pred_ents_all,
+        )
+
         records.append(row)
 
     evaluation_df = pd.DataFrame(records, index=df.index)
     return df.join(evaluation_df)
+
 
 
 #AS2 функция называлась ранее evaluate_markup
@@ -340,14 +378,14 @@ def print_metrics(metrics: dict) -> None:
 
 
 def debug_report(df: pd.DataFrame, n: int = 10, file_name: str = "",
-                 status: str = "", fragments=()) -> None:
+                 status: str = "", fragments=(), patterns=()) -> None:  # AS4
     """Печатает debug-отчёт из готовых колонок df (алгоритм не запускает)."""
     required = ["status", "tp_items", "fp_items", "fn_items",
-               "clean_text", "pred_markup"]
+                "clean_text", "pred_markup"]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise KeyError(f"Нет колонок отчёта: {missing}. "
-                      "Сначала вызовите add_evaluation_columns(df).")
+                       "Сначала вызовите add_evaluation_columns(df).")
 
     fh = open(file_name, "w", encoding="utf-8") if file_name else None
 
@@ -358,7 +396,13 @@ def debug_report(df: pd.DataFrame, n: int = 10, file_name: str = "",
             fh.write(text + "\n")
 
     try:
-        printf(f"=== debug: всего {len(df)} строк, на экран первые {n} ===")
+        if n:
+            fragments_str = f"; отбор по fragments: {fragments}" if fragments else ""
+            status_str = f"; отбор по status: {status}" if status else ""
+            patterns_str = f"; отбор по patterns: {patterns}" if patterns else ""  # AS4
+            printf(f"=== debug: всего {len(df)} строк, на экран первые {n}"
+                   f"{fragments_str}{status_str}{patterns_str} ===")  # AS4
+
         shown = 0
         for idx, row in df.iterrows():
             if status and row["status"] != status:
@@ -366,6 +410,15 @@ def debug_report(df: pd.DataFrame, n: int = 10, file_name: str = "",
             if fragments:
                 clean = (row.get("clean_text", "") or "").lower()
                 if not any(f.lower() in clean for f in fragments):
+                    continue
+
+            # AS4: ищем целые паттерны в квадратных скобках.
+            if patterns:
+                texts = [(row["pred_markup"] or "").lower()]
+                if row["status"] == "ERR":
+                    texts.append((row["text"] or "").lower())
+                if not any(f"[{p.lower()}]" in text
+                           for p in patterns for text in texts):
                     continue
 
             eid = row.get("№ примера", row.get("num", idx+1)) #AS2 разрешим колонке называться num, а индекс-заглушку надо увеличть на 1, так как она итдёт от 0
@@ -385,22 +438,44 @@ def debug_report(df: pd.DataFrame, n: int = 10, file_name: str = "",
                 printf(f"ref:  {row['text']}", to_screen)
             printf(f"pred: {row['pred_markup']}", to_screen)
 
-        printf("=== end debug ===")
+        if n:
+            printf("=== end debug ===")
     finally:
         if fh:
             fh.close()
-
 
 # =============================================================================
 # ТОЧКА ВХОДА
 # =============================================================================
 
+# Анализ длительности операций
+import cProfile, pstats
+
 def process_benchmark(path: str, engine, threshold: float = DEFAULT_THRESHOLD,
                       n: int = 10, report_path: str = "src/debug.txt",
                       status: str = "") -> pd.DataFrame:
     df = load_benchmark(path)
-    df = add_evaluation_columns(df, engine, threshold)
     print(f"Загружено примеров: {len(df)} из файла {path}")
+
+    # Анализ длительности операций, начало
+    duration_test = False # ставим True для анализа длительноси
+    if duration_test:
+        profiler = cProfile.Profile()
+        profiler.enable()
+
+
+    # основной механизм c замером общей длительности
+    t0 = time.perf_counter()
+    df = add_evaluation_columns(df, engine, threshold) 
+    print(f"Время работы: {(time.perf_counter() - t0):.1f} сек.")  
+
+    # Анализ длительности операций, окончание
+    if duration_test:
+        profiler.disable()
+        stats = pstats.Stats(profiler).strip_dirs()
+        stats.sort_stats("cumulative").print_stats(25)
+        stats.sort_stats("tottime").print_stats(25)
+    
 
     print_metrics(get_metrics(df))
     debug_report(df, n=n, file_name=report_path, status=status)
@@ -414,9 +489,9 @@ def main() -> pd.DataFrame:
                        help=f"Файл с эталонной разметкой (default: {DEFAULT_BENCHMARK}).")
     parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
                        help=f"Порог вероятности экстрактора (default: {DEFAULT_THRESHOLD}).")
-    parser.add_argument("--limit", type=int, default=10,
+    parser.add_argument("--limit", type=int, default=0,
                        help="Сколько строк отчёта печатать на экран (0 — только в файл).")
-    parser.add_argument("--status", default="ERR", choices=["", "OK", "ERR"],
+    parser.add_argument("--status", default="", choices=["", "OK", "ERR"],
                        help="Фильтр строк отчёта по статусу.")
     parser.add_argument("--report", default="src/debug.txt",
                        help="Куда писать полный debug-отчёт.")
@@ -425,9 +500,39 @@ def main() -> pd.DataFrame:
     print("Loading stanza pipeline (tokenize,pos,lemma,depparse)...", file=sys.stderr)
     engine = build_engine()
 
-    return process_benchmark(args.benchmark, engine, threshold=args.threshold,
+    # #AS2 Просто для ускорения отладки
+    args.benchmark = "src/books500.xlsx"
+#    args.benchmark = "src/wiki.tsv"
+    # #AS2
+
+
+    # данная функция отрабатывает бенчмарк и выводит все результаты в лог в файл, если в параметрах скрипта не сказано другого
+    df = process_benchmark(args.benchmark, engine, threshold=args.threshold,
                              n=args.limit, report_path=args.report,
                              status=args.status)
+    
+    # а это блок функций, которые по готовому датасету выводят дополнительные отчёты в терминал для отладки. Тут в файл ничего не пишется, так как имя файла не передаётся
+    debug_report(df, n=100, status="ERR") 
+
+    debug_report(df, n=100, patterns=["с целью"])   
+
+#    debug_report(df, n=100, fragments=["тогда", "теперь"])   
+
+#    debug_report(df, n=100, fragments=["в том числе"])   # проверить примеры
+
+#    debug_report(df, n=100, fragments=["лучше"])   
+#    debug_report(df, n=100, fragments=["то есть"])   
+#    debug_report(df, n=100, fragments=["в том же"])     # тут надо разбираться Пример books326 
+#    debug_report(df, n=100, fragments=["тут же"])     # тут надо разбираться Пример books360 
+    #debug_report(df, n=100, fragments=["тогда", "теперь"])    # тут написано отдельное общее правило
+#    debug_report(df, n=100, fragments=["ещё", "еще", "прежде всего"])    
+    debug_report(df, n=100, fragments=["наряду с"])    # тут вопрос, надо разбираться со случаями
+#    debug_report(df, n=100, fragments=["благодаря"])    # тут нужно поверять дательный падеж после, но нужны контрпримеры
+#    debug_report(df, n=100, fragments=["затем"])    
+#    debug_report(df, n=100, fragments=["дело в том"])    
+#    debug_report(df, n=100, status="ERR", fragments=["при этом", "в результате"])
+
+    return df
 
 
 if __name__ == "__main__":

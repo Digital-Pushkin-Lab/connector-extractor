@@ -26,6 +26,9 @@ def linker_list_to_patterns(raw_expressions: List[str]) -> List[Pattern]:
         if not expr:
             continue
 
+        #AS Добавим пробел перед дефисом в списках паттернов для -то (есть "во-первых", "во-вторых" в них пробел вставлять не надо)
+        expr = expr.replace("-то", " -то").replace("  ", " ")
+
         parts = []
         for part in expr.split("..."):
             words = tuple(part.strip().split())
