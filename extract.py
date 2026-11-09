@@ -26,7 +26,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from pipeline import (
-    DEFAULT_LINKERS_CSV,
+#    DEFAULT_LINKERS_CSV,
     DEFAULT_THRESHOLD,
     analyze_parsed,
     build_engine,
@@ -77,7 +77,7 @@ def parse_args():
         "--threshold", type=float, default=DEFAULT_THRESHOLD,
         help=f"Minimum scored probability to keep a match (default: {DEFAULT_THRESHOLD}).",
     )
-    parser.add_argument("--linkers-csv", default=str(DEFAULT_LINKERS_CSV), help="Linkers word list CSV.")
+    parser.add_argument("--linkers-csv", default="", help="Linkers word list CSV.")
 
     return parser.parse_args()
 
@@ -174,11 +174,11 @@ def run(args, engine):
 def main():
     args = parse_args()
 
-    # # для отлдки
-    # if not args.input_file:
-    #     args.input_file = "src/books_.tsv"
-    # if not args.output:
-    #     args.output = "src/result.tsv"
+    # для отлдки
+    if not args.input_file:
+        args.input_file = "src/books_.tsv"
+    if not args.output:
+        args.output = "src/result.tsv"
 
     table = table_input(args)
     if table and not args.output:

@@ -11,10 +11,13 @@ from typing import List, Optional, Sequence, Tuple
 from collections import defaultdict
 #from bisect import bisect_left
 
-from rules import Token
+from rules import Token, Phrase
 
 Part = Tuple[str, ...]
 Pattern = Tuple[Part, ...]
+
+
+
 
 _cached_pattern_index = None
 
@@ -44,10 +47,6 @@ def build_pattern_index(patterns):
 
     return pattern_index
 
-
-
-def pattern_surface(pattern: Pattern) -> str:
-    return "...".join(" ".join(part) for part in pattern)
 
 
 def match_part(tokens, start: int, part: Part) -> Optional[int]:
@@ -145,25 +144,27 @@ def extract_entities_from_sentence(tokens_stanza, patterns: Sequence[Pattern], d
 
             spans = match_pattern(tokens, i, pattern)
             if spans:
-                parts_json = {}
+                if debug :
+                    pass                
+                parts = {}
                 char_spans = []
                 for idx, (s, e) in enumerate(spans, start=1):
                     
                     part_tokens = tokens[s:e]
 
-                    parts_json[f"part{idx}"] = part_tokens
+                    parts[f"part{idx}"] = part_tokens
                     char_spans.append((part_tokens[0]["start_char"], part_tokens[-1]["end_char"]))
                     for k in range(s, e):
                         used[k] = True
 
-                results.append({
-                    "surface": pattern_surface(pattern),
-                    "parts": parts_json,
-                    "spans": char_spans,
-                })
+                results.append(Phrase(parts, char_spans, pattern))
                 break
 
     return results
+
+#временно
+def pattern_surface(pattern: Pattern) -> str:
+    return "...".join(" ".join(part) for part in pattern)
 
 
 def sentence_to_json(sentence: str, tokens, patterns: Sequence[Pattern], debug = False) -> dict:

@@ -105,13 +105,27 @@ class Token:
     def upos(self):
         return self.st.words[0].upos if self.st.words else None
 
+    @property
+    def id(self): #возможно назвать свойство st_id (то есть stanza.id)
+        return self.st.words[0].id if self.st.words else None # возможно сделать 0 или 1 
+
+    @property
+    def head(self):
+        return self.st.words[0].head if self.st.words else None # возможно сделать 0 или 1 
+    
+    @property
+    def deprel(self): 
+        return self.st.words[0].deprel if self.st.words else None
+    
     def __repr__(self):
         return (
-            f"Token(text={self.text!r}, "
-            f"lemma={self.lemma!r}, "
-            f"upos={self.upos!r})"
+            f'Token({self.id!r}, {self.text!r}, '
+            f'{self.lemma!r}, '
+            f'{self.upos!r}, '
+            f'{self.head!r}, '
+            f'{self.deprel!r})'
         )
-
+    
     def __str__(self):
         return self.__repr__()
 
@@ -199,32 +213,55 @@ class Token:
         return self.info
 
 
-def all_words(parts: Dict[str, list]) -> list:
-    return [w for part in parts.values() for w in part]
+
+class Phrase:
+    def __init__(self, parts, spans, pattern):
+        self.parts = parts
+        self.spans = spans
+        self.pattern = pattern
+        self.surface = "...".join(" ".join(part) for part in pattern)
+        self.words = [w for part in parts.values() for w in part]  #токены фразы
+        self.sent_tokens = self.words[0].tokens #токены предложения
+
+    def parts_list(self) -> list:
+        return list(self.parts.values())
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+    
+
+    def __getitem__(self, key):
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            raise KeyError(key)
 
 
-def parts_list(parts: Dict[str, list]) -> list:
-    return list(parts.values())
 
 
-def rule_single_part_only_part(parts):
-    words = all_words(parts)
-    if len(words) == 1 and words[0].upos == "PART":
-        return -1
-    return 0
 
 
-def rule_sentence_initial(parts):
-    for part in parts_list(parts):
+
+
+# не используется
+# def rule_single_part_only_part(phrase):
+#     words = phrase.words
+#     if len(words) == 1 and words[0].upos == "PART":
+#         return -1
+#     return 0
+
+
+def rule_sentence_initial(phrase):
+    for part in phrase.parts_list():
         if any(w["id"] == 1 for w in part):
             return +1
     return 0
 
 
-def rule_dependency_signal(parts):
-    parts_vals = parts_list(parts)
+def rule_dependency_signal(phrase):
+    parts_vals = phrase.parts_list()
 
-    for w in all_words(parts):
+    for w in phrase.words:
         if w["deprel"] in {"parataxis", "discourse", "cc", "mark", "fixed"}:
             return +1
 
@@ -240,29 +277,29 @@ def rule_dependency_signal(parts):
     return 0
 
 
-def rule_no_space_after(parts):
-    for w in all_words(parts):
+def rule_no_space_after(phrase):
+    for w in phrase.words:
         if w.f.Is_NoSpaceAfter:
             return +1
     return 0
 
 
-def rule_pos_per_part(parts):
-    for part in parts_list(parts):
+def rule_pos_per_part(phrase):
+    for part in phrase.parts_list():
         if not any(w.upos in {"SCONJ", "CCONJ", "ADV"} for w in part):
             return 0
     return +1
 
 
-def rule_punct_before(parts):
-    for part in parts_list(parts):
+def rule_punct_before(phrase):
+    for part in phrase.parts_list():
         if part and part[0].f.Is_PunctBefore:
             return +1
     return 0
 
 
-def rule_pron_after_adp(parts):
-    for part in parts_list(parts):
+def rule_pron_after_adp(phrase):
+    for part in phrase.parts_list():
         for i, w in enumerate(part):
             if w["id"] >= 2:
                 if w["upos"] == "PRON" and part[i - 1]["upos"] == "ADP":
@@ -271,8 +308,8 @@ def rule_pron_after_adp(parts):
 
 
 # Не используется
-# def rule_my_head_is_next_tokens_id(parts):
-#     for part in parts_list(parts):
+# def rule_my_head_is_next_tokens_id(phrase):
+#     for part in parts_list(phrase.parts):
 #         for i, w in enumerate(part):
 #             if i < len(part) - 1:
 #                 if w["head"] == part[i + 1]["id"]:
@@ -280,10 +317,10 @@ def rule_pron_after_adp(parts):
 #     return 0
 
 
-def rule_introductory_potential(parts):
+def rule_introductory_potential(phrase):
     """A trailing particle 'же' (up to the following comma), or a leading
     'а'/'и', is tolerated around an introductory construction."""
-    for part in parts_list(parts):
+    for part in phrase.parts_list():
         if not part:
             continue
 
@@ -322,9 +359,9 @@ def in_triggers(words, triggers):
 # правило согласования "При этом". Отрабатывает конструкции типа "При этом", "В результате", "Как првило" и т.п. 
 # зависимое слово сильно роняет вероятность ("При этом императоре"). Отсутствие зависимого слова сильно повышает вероятность. 
 
-def rule_pri_etom_dependent(parts):
+def rule_pri_etom_dependent(phrase):
     """«при этом» + зависимое справа → штраф; без зависимого → бонус."""
-    words = all_words(parts)
+    words = phrase.words
     texts = tuple(w.get("text", "").lower() for w in words)  # tuple, не list
 
     #AS2 добавили: как 
@@ -356,7 +393,7 @@ def rule_pri_etom_dependent(parts):
 
         
 
-def rule_phrase_in_list(parts):
+def rule_phrase_in_list(phrase):
     """Правило даёт +1 балл, если оборот в списке. """
 
     # Это немного "читтерское" правило. Оно даёт оборотам +1 балл (0.2) что позволяет таким оборотам "сработать" при одном сработавшем обычном правиле
@@ -365,7 +402,7 @@ def rule_phrase_in_list(parts):
 
 
 
-    words = all_words(parts)
+    words = phrase.words
     texts = tuple(w.get("text", "").lower() for w in words)  # tuple, не list
 
     #AS2 добавляем "однако" и другие
@@ -392,6 +429,7 @@ def rule_phrase_in_list(parts):
     интересно
     же
     в тот же
+    тогда как
 #    наряду с  # надо разбираться со случаями употребления
     """
 
@@ -424,27 +462,27 @@ def rule_phrase_in_list(parts):
 
 
 
-def rule_conjunction_i(parts):
+def rule_conjunction_i(phrase):
     """Отдельный союз «и, или, либо» → сильный бонус; иначе 0."""
     conjunctions = "и, или, либо"
 
-    words = all_words(parts)
+    words = phrase.words
     if len(words) != 1:
         return 0
 
-    w = words[0]
-    if w.get("text", "").lower() not in conjunctions.split(", "):
+    word = words[0]
+    if word.s not in conjunctions.split(", "):
         return 0
 
     # типичные признаки сочинительного союза у Stanza
-    if w.get("upos") == "CCONJ" or w.get("deprel") in {"cc", "discourse", "fixed"}:
+    if word.upos == "CCONJ" or word.get("deprel") in {"cc", "discourse", "fixed"}:
         return +2  # сдвиг p на 2/n (при n=5 → +0.4)core_entity
     return 0
 
 
-def rule_special(parts):
+def rule_special(phrase):
     """Специфические контекстные правила для сложных одиночных коннекторов."""
-    words = all_words(parts)
+    words = phrase.words
     if not words:
         return 0
 
@@ -479,11 +517,11 @@ def rule_special(parts):
 
     return 0
 
-def rule_time_connector(parts):
+def rule_time_connector(phrase):
     """Единое правило валидации синтаксического контекста для временных 
     дейктических слов (тогда, теперь, сейчас, впоследствии, ныне, затем и др.)
     """
-    words = all_words(parts)
+    words = phrase.words
     if not words:
         return 0
 
@@ -502,7 +540,7 @@ def rule_time_connector(parts):
     if not word:
         return 0
 
-    if words[0].tokens[0].text == "Если": # первый токен предложения
+    if words[0].text == "Если": # первый токен предложения
 #        print(tokens2sent(words[0].tokens))
         pass    
 
@@ -512,10 +550,9 @@ def rule_time_connector(parts):
         return +1
 
     # Безопасно извлекаем базовые свойства найденного токена
-#    misc = word.get("misc") or ""
-    w_id = word.get("id", 1)
-    deprel = word.get("deprel", "")
-    upos = word.upos
+    w_id = word.id
+    # deprel = word.deprel
+    # upos = word.upos
     
 
     w_idx = w_id - 1  # 0-based индекс в tokens
@@ -549,19 +586,10 @@ def rule_time_connector(parts):
                 if punct_text in {".", "!", "?"}:
                     break  # Граница предложения, останавливаемся
 
-    # СТАНДАРТНЫЕ ФОЛБЕКИ (для обратной совместимости)
-    if upos == "ADJ" or word.f.Is_HeadFollowingNoun or word.f.Is_DependentAfter:
-        return -1
-
+    # # СТАНДАРТНЫЕ ФОЛБЕКИ (для обратной совместимости)
     if w_id == 2 or word.f.Is_IntroductoryPotential or word.f.Is_PunctBefore:
         return +1
-    
-    if deprel in {"parataxis", "discourse", "cc", "mark", "fixed"}:
-        return +1
-
-    if w_id > 4 and deprel not in {"parataxis", "discourse", "cc", "mark", "fixed"}:
-        return -1
-
+  
     return 0
 
 class RuleBasedLinkerChecker:
@@ -577,13 +605,13 @@ class RuleBasedLinkerChecker:
         self.extra_rules.append(rule_fn)
 
 
-    #AS Метод доработан. 1. Добавлены экстра--правила 2. Добавлены отладочные сообщения    
-    def score_entity(self, entity: dict, debug: bool = False) -> float:
+    #AS Метод доработан. 1. Добавлены экстра-правила 2. Добавлены отладочные сообщения    
+    def score_entity(self, phrase, debug: bool = False) -> float:
         """entity: {"surface": ..., "parts": {part1: [...], ...}}"""
         n = len(self.rules)
         votes = []
         for rule in self.rules:
-            v = rule(entity["parts"])
+            v = rule(phrase)
             votes.append((rule.__name__, v))
 
         score = sum(v for _, v in votes)
@@ -592,7 +620,7 @@ class RuleBasedLinkerChecker:
         extra_votes = []
         step = 1.0 / n if n else 1.0
         for rule in getattr(self, "extra_rules", []):
-            v = rule(entity["parts"]) 
+            v = rule(phrase) 
             extra_votes.append((rule.__name__, v))
             if v != 0:
                 p += v * step
@@ -600,7 +628,7 @@ class RuleBasedLinkerChecker:
         p = max(0.0, min(1.0, p))
 
         if debug:
-            print(f"  surface={entity.get('surface')!r}  p={p:.3f}")
+            print(f"  surface={phrase.surface!r}  p={p:.3f}")
             for name, v in votes:
                 print(f"    {name}: {v:+d}")
             for name, v in extra_votes:
@@ -608,17 +636,16 @@ class RuleBasedLinkerChecker:
 
         return p
 
-    def score_sentence(self, sentence_json: dict, tokens, debug: bool = False) -> List[dict]:
+    def score_sentence(self, sentence_json: dict, debug: bool = False) -> List[dict]:
         results = []
         if debug:
             print(sentence_json.get('sentence'))
 
-        for entity in sentence_json.get("entities", []):
-            results.append({
-                "linker": entity["surface"],
-                "probability": self.score_entity(entity, debug=debug),
-            })
-        return results
+        phrases = sentence_json.get("entities", []);
+        for phrase in phrases:
+            phrase.probability = self.score_entity(phrase, debug=debug)
+
+        return phrases
 
 
 def build_default_checker() -> RuleBasedLinkerChecker:
