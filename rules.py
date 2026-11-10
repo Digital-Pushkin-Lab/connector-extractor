@@ -13,19 +13,33 @@ from pyroaring import BitMap
 
 
 class BitFlag:
-    """Булев атрибут, хранящий значение в bitmap."""
+    """Булев атрибут, хранящий значение в bitmap с автоматической проверкой типа."""
 
     def __init__(self, feature_id: int):
         self.feature_id = feature_id
+        self.owner_cls = None  # Определится автоматически чуть позже
 
+    def __set_name__(self, owner, name):
+        # Python автоматически вызовет этот метод и передаст сюда класс-владелец
+        self.owner_cls = owner
+
+    def _validate(self, instance):
+        if self.owner_cls and not isinstance(instance, self.owner_cls):
+            raise TypeError(
+                f"Признак с ID {self.feature_id} принадлежит классу {self.owner_cls.__name__}, "
+                f"но был вызван для объекта {type(instance).__name__}"
+            )
+ 
     def __get__(self, instance, owner=None):
         if instance is None:
             return self
+        self._validate(instance) # проверяем тип
         return self.feature_id in instance._bits
-
+    
     def __set__(self, instance, value: bool):
         if not isinstance(value, bool):
             raise TypeError("Значение признака должно быть bool")
+        self._validate(instance)  # Проверяем тип перед записью
 
         if value:
             instance._bits.add(self.feature_id)
@@ -33,20 +47,20 @@ class BitFlag:
             instance._bits.discard(self.feature_id)
 
 
-class TokenFeatures:
-    """Бинарные признаки токена с доступом через атрибуты."""
+# class TokenFeatures:
+#     """Бинарные признаки токена с доступом через атрибуты."""
 
-    __slots__ = ("_bits",)
+#     __slots__ = ("_bits",)
 
-    # ID признаков должны оставаться постоянными.
-    Is_PunctBefore = ЕстьПунктуацияПеред = BitFlag(0)
-    Is_IntroductoryPotential = ПотенциальноВводное = BitFlag(1)
-    Is_NoSpaceAfter = НетПробелаПосле = BitFlag(2)
-    Is_DependentAfter = ЕстьЗависимоеПосле = BitFlag(3)
-    Is_HeadFollowingNoun = ГлавноеСуществительноеСправа = BitFlag(4)
+#     # ID признаков должны оставаться постоянными.
+# #    Is_PunctBefore = ЕстьПунктуацияПеред = BitFlag(0)
+#     Is_IntroductoryPotential = ПотенциальноВводное = BitFlag(1)
+#     Is_NoSpaceAfter = НетПробелаПосле = BitFlag(2)
+#     Is_DependentAfter = ЕстьЗависимоеПосле = BitFlag(3)
+#     Is_HeadFollowingNoun = ГлавноеСуществительноеСправа = BitFlag(4)
 
-    def __init__(self):
-        self._bits = BitMap()
+#     def __init__(self):
+#         self._bits = BitMap()
 
 
 
@@ -62,23 +76,20 @@ class Token:
 
     def __init__(self, token_stanza, tokens):
         self.st = token_stanza    # Stanza или Stanza Token (для Spacy Token, впрочем, будет sp)
-        self.std_ = token_stanza.to_dict()
-        self.std = self.std_[0]   # Stanza Dict - станза-токен, превращённый словарь
+        st_dict = token_stanza.to_dict()
+        self.info =st_dict[0]   # Первое слово из токена Stanza превращённого в словарь. Для доступа к инфорамции Stanaza через интерфейс словаря
 
         self.text = token_stanza.text
         self.s = self.text.lower()   #часто нужно в нижем регистре, возможно тут требуется дополнительно отчистить от, например, знаков ударения
         self.tokens = tokens         # ключевой момент. Токены исходного предложения с типом Token
 
-        # Вычисляются вместе при первом обращении.
-        self.info = None # здесь были признаки токена. Оставили для совместимости. Фактически здесь теперь self.std
-        self._f = None  # это признаки токена. Они зависят от соседей, поэтомы мы их вычислить в конструкторе не можем
 
-    @property
-    def f(self) -> TokenFeatures:
-        """Признаки токена с ленивым вычислением."""
-        if self._f is None:
-            self.assemble_token_info()
-        return self._f
+    # @property
+    # def f(self) -> TokenFeatures:
+    #     """Признаки токена с ленивым вычислением."""
+    #     if self._f is None:
+    #         self.assemble_token_info()
+    #     return self._f
 
     def index(self):
         return self.tokens.index(self)
@@ -107,125 +118,268 @@ class Token:
 
     @property
     def id(self): #возможно назвать свойство st_id (то есть stanza.id)
-        return self.st.words[0].id if self.st.words else None # возможно сделать 0 или 1 
+        return self.st.words[0].id if self.st.words else 0 # такого id не бывает и он конвертируется в False
+
+    @property
+    def head_id(self):
+        return self.st.words[0].head if self.st.words else 0 # такого id не бывает и он конвертируется в False
 
     @property
     def head(self):
-        return self.st.words[0].head if self.st.words else None # возможно сделать 0 или 1 
+        """Возвращает родительский объект Token, используя относительное смещение IDs."""
+        if not self.head_id or not self.id or not self.tokens:
+            return None
+        
+        # Вычисляем относительное смещение в нумерации ID Stanza
+        offset = self.head_id - self.id
+        # Находим целевой индекс в списке tokens предложения
+        target_idx = self.index() + offset
+        
+        if 0 <= target_idx < len(self.tokens):
+            return self.tokens[target_idx]
+        return None
     
     @property
     def deprel(self): 
         return self.st.words[0].deprel if self.st.words else None
+
+    @property
+    def feats(self) -> str:
+        """Возвращает морфологические признаки токена в виде строки."""
+        if self.st.words and self.st.words[0].feats:
+            return str(self.st.words[0].feats)
+        return ""
     
     def __repr__(self):
+        # Выводим (lemma) только если s и lemma не совпадают
+        # .s - всегда в нижнем регистре, а .lemma может быть в верхнем, если это имя, поэтому переведём её в нижний
+        lemma_str = f"({self.lemma!r})" if self.s != self.lemma.lower() else ""  
+        
         return (
-            f'Token({self.id!r}, {self.text!r}, '
-            f'{self.lemma!r}, '
-            f'{self.upos!r}, '
-            f'{self.head!r}, '
-            f'{self.deprel!r})'
+            f"Token({self.text!r}{lemma_str}="
+            f"{self.upos},"     
+            f"{self.deprel}, "     
+            f"id={self.id!r},"
+            f"h={self.head_id!r})"
         )
-    
+        
     def __str__(self):
         return self.__repr__()
 
-    # Для совместимости с существующим кодом.
-    def to_dict(self):
-        return self.std_
+    # # Для совместимости с существующим кодом.
+    # def to_dict(self):
+    #     return self.std_
 
-    def get_info(self) -> dict:
-        return self.assemble_token_info()
 
     def get(self, key, default=None):
-        return self.get_info().get(key, default)
+        return self.info.get(key, default)
 
     def __getitem__(self, key):
-        return self.get_info()[key]
-
-    def assemble_token_info(self) -> dict:
-        """Возвращает словарь Stanza и вычисляет признаки токена.
-
-        Кэширует:
-        - self.info — копию исходного словаря Stanza;
-        - self._f — объект TokenFeatures с bitmap внутри.
-
-        misc не читается и не изменяется.
-        """
-        if self.info is not None:
-            return self.info
-
-        token_position = self.index()
-        tokens = self.tokens
-
-        basic_info_dict = self.std.copy()
-        features = TokenFeatures()
-
-        prev_token = self.prev
-        next_token = self.next
-
-        # Условие сохранено из исходного класса: позиция >= 2.
-        if token_position >= 2 and prev_token.upos == "PUNCT":
-            features.Is_PunctBefore = True
-
-        if token_position >= 1 and token_position < len(tokens) - 2:
-            prev_lemma = prev_token.lemma
-            next_lemma = next_token.lemma
-            next_next_upos = next_token.next.upos
-
-            if (
-                prev_lemma in {"а", "и"}
-                or (next_lemma == "же" and next_next_upos == "PUNCT")
-            ):
-                features.Is_IntroductoryPotential = True
-
-        if next_token is None or next_token.upos == "PUNCT":
-            features.Is_NoSpaceAfter = True
-
-        this_id = basic_info_dict.get("id")
-        head_id = basic_info_dict.get("head", 0)
-
-        # Есть зависимый токен справа, не считая пунктуации.
-        for j in range(token_position + 1, len(tokens)):
-            std = tokens[j].std
-
-            if std.get("upos") == "PUNCT":
-                continue
-
-            if this_id is not None and std.get("head") == this_id:
-                features.Is_DependentAfter = True
-                break
-
-        # Главное слово справа — существительное или имя собственное.
-        for j in range(token_position + 1, len(tokens)):
-            std = tokens[j].std
-
-            if (
-                head_id
-                and std.get("id") == head_id
-                and std.get("upos") in {"NOUN", "PROPN"}
-            ):
-                features.Is_HeadFollowingNoun = True
-                break
-
-        self._f = features
-        self.info = basic_info_dict
-
-        return self.info
+        return self.info[key]
 
 
 
 class Phrase:
+
+    # Чтобы self._bits заполнился автоматически, мы должны здесь перечислить эти значения
+    StartPosition = СтартоваяПозиция = BitFlag(0)
+    EndPosition = КонечнаяПозиция = BitFlag(1)
+
+    SentenceInitial = НачалоПредложения = BitFlag(2)
+
+    Parataxis = ВводнаяКонструкция = BitFlag(3) # Отношение между главным предложением и соседней независимой конструкцией. Сюда относятся вводные слова, пояснения или прямая речь (например, «как мне кажется», «сказал он»).
+    Discourse = ДискурсивныйМаркер = BitFlag(4) # Элементы речи, которые не несут синтаксической нагрузки, но важны для структуры диалога или выражения эмоций. Это междометия, частицы, маркеры ответа и привлечения внимания (например, «ну», «ого», «ведь»).
+    CC = Coordinating = СочинительныйCоюз = BitFlag(5)  # Отношение между элементом предложения и сочинительным союзом, который его связывает (например, союзы «и», «а», «но»).
+    Marker  = ПодчинительныйМаркер  = BitFlag(6) # Отношение между придаточным предложением и подчинительным союзом (или инфинитивной частицей), который его вводит (например, «чтобы», «если», «потому что»).
+    Fixed  = ФиксированноеВыражение = BitFlag(7) # Используется для связи слов внутри застывших, неразложимых грамматических конструкций и многословных союзов. Первое слово становится главным, а остальные привязываются к нему через fixed (например, «в то время как», «в связи с»).    
+
+    Parenthetical = Поясняющий = BitFlag(8) # Вводные элементы: вводные слова (parataxis) и частицы (discourse) 
+    Connective = Связующий = BitFlag(9)  # Связующие элементы cc mark fixed
+
+    Structural = Структурынй = BitFlag(10)  # Структурные элементы: есть вводные слова или связующие элементы
+
+
+    Complex  = Комплексный = BitFlag(11) # Комплексный паттерн, состоящий из нескольких слов
+    ConnectiveInEachPart  = СвязующийВКаждойЧасти = BitFlag(12) # Все части сложного выражения содержат связующие элементы
+
+    Len1  = Длина1 = BitFlag(13) # Длина фразы 1 токен
+
+    PunctAfter = ПунктуацияПосле = BitFlag(20)
+    PunctInside = ПунктуацияВнутри = BitFlag(21)
+    PunctBefore = ПунктуацияПеред = BitFlag(22)
+    PunctBeforeAnyPart = ПунктуацияПередЛюбойЧастью = BitFlag(23)
+
+    Prev_A_I = Предшествует_А_И = BitFlag(30)
+    Next_ZheComma = СледуетЖеЗапятая = BitFlag(31) # Сейчас этот признак не используется в правилах
+
+    BspSignalBefore = БспСигналПеред = BitFlag(41) # аббревиатуру БСП (Asyndetic Compound Sentence) в русскоязычных NLP-проектах часто оставляют транслитом для простоты
+
+    DependentAfter = ЗависимоеПосле = BitFlag(42) # Зависимое от последнего токена фразы слово идёт сразу после фразы не считая пунктуации
+
+    LastHeadAfter = ПоследнегоГлавноеСправа = BitFlag(50) # Главное слово последнего токена фразы справа
+
+#    FirstHeadLeft = ПервогоГлавноеСлева = BitFlag(60) # Главное слово первого токена фразы слева
+
+    # ПРИЗНАКИ С ПРАВИЛ, КОТОРЫЕ БОЛЬШЕ НЕ ИСПОЛЬЗУЮТСЯ
+    LinkInEachPart = СвязьВКаждойЧасти = BitFlag(70) 
+    SingleParticle = ОднаЧастица = BitFlag(71) 
+    PronAfterAdp = МестоимениеПослеПредлога = BitFlag(72) 
+    HeadNextToken = ВершинаСледующийТокен = BitFlag(73) 
+
+
     def __init__(self, parts, spans, pattern):
         self.parts = parts
         self.spans = spans
         self.pattern = pattern
         self.surface = "...".join(" ".join(part) for part in pattern)
-        self.words = [w for part in parts.values() for w in part]  #токены фразы
+        self.words = [word for part in parts for word in part]  #токены фразы
         self.sent_tokens = self.words[0].tokens #токены предложения
+     
+        # Инициализируем хранилище битов (можно заменить на BitMap())
+        self._bits = set() 
+        
+        # 2. Запускаем вычисление признаков при создании объекта
+        self._calc_features()
 
-    def parts_list(self) -> list:
-        return list(self.parts.values())
 
+    def _calc_features(self):
+        """Вычисляет и устанавливает бинарные признаки для фразы."""
+        if not self.words:
+            return
+
+        first= self.first
+        last= self.last
+
+        # СтартоваяПозиция
+        self.StartPosition = not self.prev
+
+        # КонечнаяПозиция
+        self.EndPosition = not self.next
+
+        # НачалоПредложения (Проверяем id. Теоретически поток токенов может содержать несколько предложений с точки зрения Stanza, хотя мы по предложениям токены делим)
+        self.SentenceInitial = (bool(first) and first.id == 1)
+
+        # Вводная конструкция
+        self.Parataxis = any(w["deprel"] == "parataxis" for w in self.words)
+        self.Discourse= any(w["deprel"] == "discourse" for w in self.words)
+        self.Coordinating = any(w["deprel"] == "cc" for w in self.words)
+        self.Marker = any(w["deprel"] == "mark" for w in self.words)
+        self.Fixed = any(w["deprel"] == "fixed" for w in self.words)
+
+        # Поясняющий
+        self.Parenthetical = self.Parataxis or self.Discourse
+        # Связующий
+        self.Connective = self.Coordinating or self.Marker or self.Fixed
+        
+        self.Structural = self.Parenthetical or self.Connective
+
+        
+
+        self.Complex = len(self.parts) > 1
+        self.Len1 = len(self.words) == 1
+
+        # All parts of a split phrase contain a core connective relation
+        connective_deprel = {"cc", "mark", "fixed"}
+        self.ConnectiveInEachPart = len(self.parts) > 1 and all(any(w["deprel"] in connective_deprel for w in part) for part in self.parts)
+
+
+        #ПунктуацияПосле
+        self.PunctAfter = bool(self.next) and self.next.upos == "PUNCT" # Для правила NoSpaseAfter
+
+        #ПунктуацияВнутри
+        self.PunctInside = any(word.next and word.next.upos == "PUNCT" for word in self.words[:-1]) # Для правила NoSpaseAfter
+
+        #ПунктуацияПеред
+        self.PunctBefore = bool(self.prev) and self.prev.upos == "PUNCT" # 
+
+        #ПунктуацияПередЛюбойЧастью
+        self.PunctBeforeAnyPart =  any(part and part[0].prev and part[0].prev.upos == "PUNCT" for part in self.parts)
+
+
+
+        self.Prev_A_I = bool(self.prev) and self.prev.lemma in {"а", "и"}
+
+        # этотпризнак сейчс не используется
+        self.Next_ZheComma = bool(self.next) and bool(self.next.next) and self.next.lemma == "же" and self.next.next.upos == "PUNCT"
+
+
+        # Анализ знаков препинания слева от фразы (Бессоюзное сложное предложение / Границы)
+        self.BspSignalBefore = False
+        curr = self.prev
+        while curr:
+            if curr.upos == "PUNCT":
+                if curr.text in {":", "—", ";"}:
+                    self.BspSignalBefore = True # Начало новой части в БСП
+                    break
+                if curr.text in {".", "!", "?"}:
+                    break      # Граница предложения, останавливаем поиск
+            curr = curr.prev
+
+        # Есть зависимый токен справа, не считая пунктуации.
+
+        self.DependentAfter = False
+        curr = last.next
+        while curr:
+            if curr.upos == "PUNCT": #пропускаем пунктуацию
+                curr = curr.next
+                continue
+
+            if curr.head_id and curr.head_id == last.id:
+                self.DependentAfter = True
+                break
+
+            curr = curr.next
+
+        self.LastHeadAfter = bool(last) and bool(last.id) and bool(last.head_id) and last.head_id > last.id
+
+        # ПРИЗНАКИ ПРАВИЛ, КОТОРЫЕНЕ ИСПОЛЬЗУЮТСЯ
+        # СвязьВКаждойЧасти
+        self.LinkInEachPart = True if all(any(w.upos in {"SCONJ", "CCONJ", "ADV"} for w in part) for part in self.parts) else False
+        # ОднаЧастица
+        self.SingleParticle = self.Len1 and first.upos == "PART"
+        # Местоимение после предлога
+        self.PronAfterAdp = any(w.prev and w.upos == "PRON" and w.prev.upos == "ADP" for w in self.words)
+
+        #ВершинаСледующийТокен
+        self.HeadNextToken = any(
+            bool(w.next) and w.head_id == w.next.id
+            for part in self.parts
+            for w in part )
+
+
+    @property
+    def first(self):
+        """Первый токен фразы."""
+        return self.words[0] if self.words else None
+
+    @property
+    def last(self):
+        """Последний токен фразы."""
+        return self.words[-1] if self.words else None
+
+    @property
+    def prev(self):
+        """Токен, идущий строго перед фразой."""
+        return self.first.prev if self.first else None
+
+    @property
+    def next(self):
+        """Токен, идущий строго после фразы."""
+        return self.last.next if self.last else None
+    
+    def find_lemma(self, lemmas):
+        """Ищет первый токен во фразе, лемма которого входит в указанный список/множество лемм.
+        
+        Принимает: строку (одну лемму) или коллекцию лемм (set, list, tuple).
+        Возвращает: Объект Token или None.
+        """
+        if isinstance(lemmas, str):
+            lemmas = {lemmas}
+        else:
+            lemmas = set(lemmas)
+
+        return next((w for w in self.words if w.lemma in lemmas), None)  
+      
     def get(self, key, default=None):
         return getattr(self, key, default)
     
@@ -236,100 +390,79 @@ class Phrase:
         except AttributeError:
             raise KeyError(key)
 
+    def __repr__(self):
+        return f"Phrase('{self.surface}')"
 
 
 
 
+def rule_sentence_initial(phrase:Phrase):
+    '''Фраза в начале предложения'''
+    if phrase.SentenceInitial:
+        return +1
+    return 0
 
+def rule_punct_before(phrase:Phrase):
+    '''Пунктуация перед фразой или её отдельной частью'''
 
-
-# не используется
-# def rule_single_part_only_part(phrase):
-#     words = phrase.words
-#     if len(words) == 1 and words[0].upos == "PART":
-#         return -1
-#     return 0
-
-
-def rule_sentence_initial(phrase):
-    for part in phrase.parts_list():
-        if any(w["id"] == 1 for w in part):
-            return +1
+    if phrase.PunctBeforeAnyPart:
+        return +1
     return 0
 
 
-def rule_dependency_signal(phrase):
-    parts_vals = phrase.parts_list()
+def rule_dependency_signal(phrase:Phrase):
+    '''Вводные слова или связующие элементы в простой фразе, либо связующие элементы в каждой части сложной фразы'''
 
-    for w in phrase.words:
-        if w["deprel"] in {"parataxis", "discourse", "cc", "mark", "fixed"}:
-            return +1
+    # 1. Any word has a target dependency relation
+    if phrase.Structural:
+        return +1
 
-    if len(parts_vals) > 1:
-        ok = True
-        for part in parts_vals:
-            if not any(w["deprel"] in {"cc", "mark", "fixed"} for w in part):
-                ok = False
-                break
-        if ok:
-            return +1
+    # 2. All parts of a split phrase contain a core connective relation
+    if phrase.ConnectiveInEachPart:
+        return +1
 
     return 0
 
+def rule_no_space_after(phrase:Phrase):
+    if phrase.EndPosition or phrase.PunctAfter or phrase.PunctInside:
+        return +1
+    return 0
 
-def rule_no_space_after(phrase):
-    for w in phrase.words:
-        if w.f.Is_NoSpaceAfter:
-            return +1
+# сейчас не используется
+# Ранее называлась rule_single_part_only_part
+def rule_single_particle(phrase):
+ 
+    if phrase.SingleParticle:
+        return -1
     return 0
 
 
-def rule_pos_per_part(phrase):
-    for part in phrase.parts_list():
-        if not any(w.upos in {"SCONJ", "CCONJ", "ADV"} for w in part):
-            return 0
-    return +1
+
+# сейчас не используется
+# ранее назыалась rule_pos_per_part
+def rule_link_in_each_part(phrase:Phrase):
+    return +1 if Phrase.LinkInEachPart else 0
 
 
-def rule_punct_before(phrase):
-    for part in phrase.parts_list():
-        if part and part[0].f.Is_PunctBefore:
-            return +1
-    return 0
 
 
-def rule_pron_after_adp(phrase):
-    for part in phrase.parts_list():
-        for i, w in enumerate(part):
-            if w["id"] >= 2:
-                if w["upos"] == "PRON" and part[i - 1]["upos"] == "ADP":
-                    return +1
-    return 0
+# сейчас не используется
+def rule_pron_after_adp(phrase:Phrase):
+    return +1 if phrase.PronAfterAdp else 0
 
+# сейчас не используется
+def rule_my_head_is_next_tokens_id(phrase):
+    return +1 if phrase.HeadNextToken else 0
 
-# Не используется
-# def rule_my_head_is_next_tokens_id(phrase):
-#     for part in parts_list(phrase.parts):
-#         for i, w in enumerate(part):
-#             if i < len(part) - 1:
-#                 if w["head"] == part[i + 1]["id"]:
-#                     return +1
-#     return 0
+# Это правило упрощено. Тут ещё была проверка на "же," после оборота, но она фактически не давала эффекта. 
+# Такой прихнак на "же," добавлен в признаки, но удалён из этого правила
+def rule_introductory_potential(phrase:Phrase):
+    
+    """A trailing a leading 'а'/'и', is tolerated around an introductory construction."""
 
-
-def rule_introductory_potential(phrase):
-    """A trailing particle 'же' (up to the following comma), or a leading
-    'а'/'и', is tolerated around an introductory construction."""
-    for part in phrase.parts_list():
-        if not part:
-            continue
-
-        if (
-            part[0].f.Is_IntroductoryPotential
-            or part[-1].f.Is_IntroductoryPotential
-        ):
-            return +1
-
+    if phrase.Prev_A_I:
+        return +1
+    
     return 0
          
 
@@ -383,12 +516,18 @@ def rule_pri_etom_dependent(phrase):
     if not in_triggers(texts, triggers):
         return 0
 
-    last = words[-1]
 
-    has_dep = last.f.Is_DependentAfter or last.f.Is_HeadFollowingNoun
-
-    if has_dep:
+    # есть заависимое от последнего слова фразы после него
+    if phrase.DependentAfter: 
         return -1
+    
+    # есть главное справо справа от последнего и оно существительное или имя собственное
+    last = phrase.last
+    last_head = last.head if last and last.head else None
+
+    if phrase.LastHeadAfter and last_head and last_head.upos in {"NOUN", "PROPN"}:
+        return -1
+
     return +1
 
         
@@ -430,6 +569,7 @@ def rule_phrase_in_list(phrase):
     же
     в тот же
     тогда как
+    и потому
 #    наряду с  # надо разбираться со случаями употребления
     """
 
@@ -462,50 +602,38 @@ def rule_phrase_in_list(phrase):
 
 
 
-def rule_conjunction_i(phrase):
+def rule_conjunction_i(phrase:Phrase):
     """Отдельный союз «и, или, либо» → сильный бонус; иначе 0."""
-    conjunctions = "и, или, либо"
-
-    words = phrase.words
-    if len(words) != 1:
-        return 0
-
-    word = words[0]
-    if word.s not in conjunctions.split(", "):
+    
+    word = phrase.first
+    if not phrase.Len1 or not word.lemma in {"и", "или", "либо"}:
         return 0
 
     # типичные признаки сочинительного союза у Stanza
-    if word.upos == "CCONJ" or word.get("deprel") in {"cc", "discourse", "fixed"}:
+    if word.upos == "CCONJ" or word.deprel in {"cc", "discourse", "fixed"}:
         return +2  # сдвиг p на 2/n (при n=5 → +0.4)core_entity
     return 0
 
 
-def rule_special(phrase):
+def rule_special(phrase:Phrase):
     """Специфические контекстные правила для сложных одиночных коннекторов."""
-    words = phrase.words
-    if not words:
+    if not phrase.words:
         return 0
+    first = phrase.first
 
-    string =  " ".join(w.get("text", "").lower() for w in words)
+    # Правило на одиночную "же"
+    if phrase.Len1 and first.s=="же":
+        prev = first.prev
 
-
-    if len(words)==1 and words[0].s=="же":
-        w = words[0]
-        w_id = w.get("id", 1)
-
-        prev = w.prev
 
         if prev:
 
             # Жесткие текстовые исключения с добавлением лемм "том" и "тех"
-            if prev.lemma in {
-                "тот", "том", "тех", "такой", "так", "один", "то",
-                "тут", "тот же", "такой же", "факт",
-            }:
+            if prev.lemma in {"тот", "такой", "так", "один", "то", "тут", "факт"}:
                 return -3
-
+            
             if prev.upos in {"NOUN", "PRON", "PROPN", "DET"} or prev.lemma == "сам":
-                if w_id <= 4:
+                if first.id <= 4:
                     return +2
 
 
@@ -517,7 +645,7 @@ def rule_special(phrase):
 
     return 0
 
-def rule_time_connector(phrase):
+def rule_time_connector(phrase:Phrase):
     """Единое правило валидации синтаксического контекста для временных 
     дейктических слов (тогда, теперь, сейчас, впоследствии, ныне, затем и др.)
     """
@@ -525,69 +653,45 @@ def rule_time_connector(phrase):
     if not words:
         return 0
 
+
+    # 1. Находим конкретный токен дейктика внутри списка слов спана
     time_deictic_lemmas = {
         "тогда", "теперь", #"сейчас", "впоследствии",   "ныне", "нынче", "затем", "потом", "прежде", "раньше"
     }
-    
-
-    # 1. Находим конкретный токен дейктика внутри списка слов спана
-    word = None
-    for w in words:
-        if w.lemma in time_deictic_lemmas:
-            word = w
-            break
+    word = phrase.find_lemma(time_deictic_lemmas)
             
     if not word:
         return 0
 
-    if words[0].text == "Если": # первый токен предложения
-#        print(tokens2sent(words[0].tokens))
-        pass    
+    # if phrase.sent_tokens[0].text == "Если": # первый токен предложения
+    #     print(tokens2text(phrase.sent_tokens))
+    #     pass    
 
     # 2. Безусловный бонус для известных устойчивых сочетаний
-    surface_lower = " ".join(w.s for w in words)
-    if surface_lower in {"тогда же", "теперь же", "сейчас же", "сразу же"}:
+    if phrase.surface in {"тогда же", "теперь же", "сейчас же", "сразу же"}:
         return +1
 
-    # Безопасно извлекаем базовые свойства найденного токена
-    w_id = word.id
-    # deprel = word.deprel
-    # upos = word.upos
-    
-
-    w_idx = w_id - 1  # 0-based индекс в tokens
-
-    # ПРИОРИТЕТНЫЙ БЛОК: ЖЕЛЕЗНЫЕ ПРИЗНАКИ НАЧАЛА (Решает стр. 388)
-    if w_id == 1:
+    # ПРИОРИТЕТНЫЙ БЛОК: ЖЕЛЕЗНЫЕ ПРИЗНАКИ НАЧАЛА (Решает books388)
+    if phrase.SentenceInitial:
         return +2
 
-    tokens = words[0].tokens # пока так
+    # --- СИНТАКСИЧЕСКИЙ АНАЛИЗ КОНТЕКСТА ---
+    
+    # Если перед дейктиком стоит частица "то" (например, "если... то тогда")
+    if word.prev and word.prev.lemma == "то":
+        return +2
 
-    # СИНТАКСИЧЕСКИЙ АНАЛИЗ КОНТЕКСТА 
-    if 0 <= w_idx < len(tokens):
-        
-        if word.prev and word.prev.lemma == "то":
-            return +2
+    # Проверка на причастие (зависимость от VerbForm=Part)
+    if word.head and "VerbForm=Part" in word.head.feats:
+        return -3
 
-        # ИСПРАВЛЕНО: берём первый элемент списка words -> words[0]
-        head_id = word.get("head", 0)
-        head_idx = head_id - 1
-        if 0 <= head_idx < len(tokens) and tokens[head_idx].st.words:
-            head_word = tokens[head_idx].st.words[0]
-            if head_word.feats and "VerbForm=Part" in str(head_word.feats):
-                return -3  # Сильный штраф гарантированно превратит случай в [OK] как other
+    # Анализ знаков препинания слева от фразы (Бессоюзное сложное предложение / Границы)
+    # books413
+    if phrase.BspSignalBefore:
+        return +2  # Начало новой части в БСП
 
-        # Исправление стр. 413: Вытягиваем БСП (поиск знака препинания двоеточия/тире слева)
-        for i in range(w_idx - 1, -1, -1):
-            if tokens[i].upos == "PUNCT":
-                punct_text = tokens[i].text
-                if punct_text in {":", "—", ";"}:
-                    return +2  # Это начало новой части в БСП, даем весомый бонус
-                if punct_text in {".", "!", "?"}:
-                    break  # Граница предложения, останавливаемся
-
-    # # СТАНДАРТНЫЕ ФОЛБЕКИ (для обратной совместимости)
-    if w_id == 2 or word.f.Is_IntroductoryPotential or word.f.Is_PunctBefore:
+    # Дополнительно работает в этом правиле
+    if phrase.Prev_A_I or phrase.PunctBefore:
         return +1
   
     return 0
@@ -652,10 +756,13 @@ def build_default_checker() -> RuleBasedLinkerChecker:
     """The rule set actually used to score the real-data runs in the
     notebook (see cell enabling/disabling rules before `get_stats`)."""
     checker = RuleBasedLinkerChecker()
+
+    
     checker.add_rule(rule_sentence_initial) #+1 если оборот в начале предложения
+    checker.add_rule(rule_punct_before) #+1 если пунктуация перед любой частью оборота
     checker.add_rule(rule_dependency_signal) #+1 если есть маркеры "parataxis", "discourse", "cc", "mark", "fixed"
-    checker.add_rule(rule_no_space_after) #+1 если пунктуация после оборота
-    checker.add_rule(rule_punct_before) #+1 если пунктуация перед оборотом
+    checker.add_rule(rule_no_space_after) #+1 если пунктуация после оборота, внутри оборота или оборот в конце текста
+
     checker.add_rule(rule_introductory_potential) # "а" или "и" перед оборотом, либо "же," после оборота
 
 
@@ -669,7 +776,7 @@ def build_default_checker() -> RuleBasedLinkerChecker:
 
 
 # Функция возвращает текст по списку тоуенов Stanza. Создана исключительно для упрощения отладки
-def tokens2sent(tokens) -> str:
+def tokens2text(tokens) -> str:
     """Восстанавливает исходный текст предложения из списка объектов-токенов Stanza
     с корректной расстановкой пробелов вокруг знаков препинания и кавычек.
     """
@@ -685,9 +792,6 @@ def tokens2sent(tokens) -> str:
         result.append(text)
         
 
-        # Базовая проверка Stanza на отсутствие пробела ПОСЛЕ текущего токена
-        if token.f.Is_NoSpaceAfter:
-            continue        
             
         # Умная лингвистическая подстраховка для знаков препинания:
         # Если следующий токен — это запятая, точка, двоеточие, закрывающая кавычка или скобка,

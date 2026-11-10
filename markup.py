@@ -855,7 +855,7 @@ def main():
 
     dataset = NewDataset("src/wiki.tsv")
 
-    dataset.make_new_dataset(source_dir + "Категория_Астрономия", max_num=200 )
+    dataset.make_new_dataset(source_dir + "Категория_Астрономия", max_num=300 )
 #    dataset.make_new_dataset(source_dir + "Категория_Архитектура", max_num=985 )
 
 

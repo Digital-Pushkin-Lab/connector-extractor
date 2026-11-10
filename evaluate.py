@@ -450,7 +450,7 @@ def main() -> pd.DataFrame:
     df = process_benchmark(args.benchmark, engine, n=args.limit, report_path=args.report, status=args.status)
     
     # а это блок функций, которые по готовому датасету выводят дополнительные отчёты в терминал для отладки. Тут в файл ничего не пишется, так как имя файла не передаётся
-    debug_report(df, n=100, status="ERR") 
+#    debug_report(df, n=100, status="ERR") 
 
 #    debug_report(df, n=100, patterns=["как правило"])   
 #    debug_report(df, n=100, fragments=["Екатерина"])   

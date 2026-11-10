@@ -143,17 +143,15 @@ def extract_entities_from_sentence(tokens_stanza, patterns: Sequence[Pattern], d
                 pass
 
             spans = match_pattern(tokens, i, pattern)
-            if spans:
-                if debug :
-                    pass                
-                parts = {}
-                char_spans = []
-                for idx, (s, e) in enumerate(spans, start=1):
-                    
-                    part_tokens = tokens[s:e]
 
-                    parts[f"part{idx}"] = part_tokens
-                    char_spans.append((part_tokens[0]["start_char"], part_tokens[-1]["end_char"]))
+            if spans:
+                if debug:
+                    pass
+
+                parts = [tokens[s:e] for s, e in spans]
+                char_spans = [(part[0]["start_char"], part[-1]["end_char"]) for part in parts]
+
+                for s, e in spans:
                     for k in range(s, e):
                         used[k] = True
 
