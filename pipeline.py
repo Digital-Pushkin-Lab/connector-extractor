@@ -23,7 +23,7 @@ from tqdm.auto import tqdm
 
 from razdel import sentenize
 
-from patterns import build_patterns_from_csv
+from patterns import build_patterns_from_csv, expand_expressions
 
 from collections import defaultdict #для сортирвоки
 import csv
@@ -73,9 +73,8 @@ class Engine:
     # )
     def __init__(
         self,
-        nlp: object,
-#        checker: object,
-        patterns_by_type: dict,
+        nlp: object = None,
+        patterns_by_type: dict = {},
         threshold=DEFAULT_THRESHOLD,        
     ) -> None:
         self.nlp = self.build_nlp(nlp)
@@ -137,14 +136,10 @@ class Engine:
                 if not row:
                     continue
 
-                expression = row[0].strip()
+                # expand_expressions - функция из модуля patterns, "разворачивает" выражение
+                for expr in expand_expressions(row[0]):  
 
-                if not expression or expression.startswith("#"):
-                    continue
-
-                tokens = tuple(expression.lower().split())
-
-                if tokens:
+                    tokens = tuple(expr.split())
                     self.sets.append(tokens)
                     for idx, word in enumerate(tokens):
                         self.sets_by_word[word].append((tokens, idx))
@@ -250,19 +245,13 @@ class Engine:
                 sentence_text = sub.text
 
                 if sentence_text not in self._sentence_cache:
-                    # Обычный одиночный вызов остаётся рабочим,
-                    # даже если preparse_texts не вызывался.
-                    self._sentence_cache[sentence_text] = self.nlp(
-                        sentence_text
-                    )
+                    # Обычный вызов остаётся доступен, даже если preparse_texts не вызывался.
+                    self._sentence_cache[sentence_text] = self.nlp(sentence_text)
 
                 parsed = self._sentence_cache[sentence_text]
 
                 if parsed.sentences:
-                    parts = [
-                        doc_sentence.tokens
-                        for doc_sentence in parsed.sentences
-                    ]
+                    parts = [doc_sentence.tokens for doc_sentence in parsed.sentences]
 
                     n_words = sum(
                         1
@@ -434,36 +423,12 @@ def parse_sentences(text: str, nlp) -> Tuple[List[tuple], int]:
     print("Вызвана устаревшая функция-обёртка parse_sentences(text: str, nlp). Требуется переписать через engine.parse_sentences(text) !!!")
 
     # создаём упрощённый Engine без чекера и паттернов, только Stanza
-#    engine = Engine(nlp=nlp, checker=None, patterns_by_type=None)
-    engine = Engine(nlp=nlp, patterns_by_type={})    
+    engine = Engine(nlp=nlp)    
 
     # вызываем функцию из engine
     return engine.parse_sentences(text)
 
 
-
-# def build_engine(linkers_csv: str = None, nlp=None, threshold=DEFAULT_THRESHOLD) -> Engine:
-#     """Construct the extractor engine. Downloads the stanza `ru` model on
-#     first use if it is missing. Pass `nlp` to reuse an existing pipeline."""
-#     from rules import build_default_checker
-
-#     if nlp is None:
-#         import stanza
-#         processors = "tokenize,pos,lemma,depparse"
-#         try:
-#             nlp = stanza.Pipeline("ru", processors=processors,
-#                                   download_method=None, logging_level="ERROR")
-#         except Exception:
-#             stanza.download("ru")
-#             nlp = stanza.Pipeline("ru", processors=processors,
-#                                   logging_level="ERROR")
-
-#     return Engine(
-#         nlp=nlp,
-#         checker=build_default_checker(),
-#         patterns_by_type=load_patterns(linkers_csv),
-#         threshold = threshold,
-#     )
 
 
 def round_half_up(value: float, ndigits: int = 1) -> float:
@@ -508,9 +473,9 @@ def extract_spans(
 
     for sentence_text, parts, sentence_start, *_ in parsed_sentences:
 
-        # # для отладки
-        # if "Екатерина" in sentence_text:
-        #     debug=True    # 'этот параметр инициирует детальный вывод 
+        # для отладки make_debug
+        # if "Годунову донесли," in sentence_text:
+        #     debug =True    # 'этот параметр инициирует детальный вывод 
         #     pass
 
         # Все части одного razdel-предложения (если stanza разбила его
@@ -554,20 +519,137 @@ def extract_spans(
     return results
 
 
+# У нас анализируются все паттерны, даже пересекающиеся, а затем мы проводим дедупликацию
+# Дедупликация разбита на два последовательных прохода:
+# 1. Сначала разрешаем конфликты только между принятыми спанами (not sp["is_rejected"]). 
+# 2. Затем оставшиеся принятые спаны очищают вложенные в них отклонённые (и отменяют длинные 
+# отклонённые, если сами оказались внутри них).
+# Таким образом, у нас останется самый сложный из принятых паттернов, а затем отклонённые, даже если
+# они пересекались с принятыми тоже длинными. Пример "Если же ты придёшь, то я буду рад."
+# Тут три паттерна "если..то", "если же", "же" Если будет приянто два: "если..то" и "если же", а "же" отклонён, 
+# то мы разрешили "спор" сначала между двумя принятыми и возьмём сложный "если...то", а затем у нас останется 
+# отклонённый "же", который уже ни с кем не конфликтует, и мы его не удалим. (А мог он окаться и принятым)
+
+# Этап 1 (точная дедупликация):
+# - Схлопывает спаны с полностью совпадающими границами и surface, оставляя
+#   вариант с наибольшей вероятностью.
+
+# Этап 2 (разрешение конфликтов между принятыми спанами):
+# - 2а. Сначала разрешаются конфликты только между принятыми составными паттернами
+#   (например, 'Стоило...как' побеждает 'как...и', чтобы проигравший составной
+#   паттерн удалился целиком по group_id и не успел поглотить одиночные союзы).
+# - 2б. Затем выжившие принятые спаны разрешают вложения и частичные пересечения
+#   с простыми принятыми спанами. Приоритет: число частей (составной побеждает
+#   простой), более ранняя позиция начала (-start), длина спана, вероятность.
+
+# Этап 3 (фильтрация отклонённых спанов):
+# - 3а. Выжившие принятые спаны поглощают вложенные в них отклонённые спаны
+#   и отменяют покрывающие их отклонённые спаны (например, принятый 'и' отменяет
+#   отклонённый 'и таким образом', освобождая вложенный 'таким образом').
+# - 3б. Среди оставшихся отклонённых спанов более длинные поглощают вложенные
+#   короткие, чтобы не плодить двойные скобки (например, 'всё чаще' поглощает 'чаще').
+
+# Этап 4 (финальная схлопка):
+# - Удаляет оставшиеся совпадения на одинаковых границах (start, end) с учётом
+#   приоритета: статус принятия, число частей, вероятность.
+
+
 def dedupe_spans(spans: List[dict]) -> List[dict]:
-    """Collapse exact-duplicate (start, end) matches, keeping whichever has
-    the higher scored probability. Order of first appearance is preserved.
-    With a single pattern list this is a safety net rather than a necessity."""
-    best: dict = {}
-    order: List[Tuple[int, int]] = []
-    for sp in spans:
-        pos = (sp["start"], sp["end"])
-        if pos not in best:
-            best[pos] = sp
-            order.append(pos)
-        elif sp["probability"] > best[pos]["probability"]:
-            best[pos] = sp
-    return [best[pos] for pos in order]
+    """Удаляет дубликаты и разрешает конфликты пересекающихся спанов."""
+
+    def parts(sp: dict) -> int:
+        pattern = getattr(sp.get("phrase"), "pattern", None)
+        return len(pattern) if pattern else sp["surface"].count("...") + 1
+
+    def contains(outer: dict, inner: dict) -> bool:
+        return outer["start"] <= inner["start"] and inner["end"] <= outer["end"]
+
+    def strictly_contains(outer: dict, inner: dict) -> bool:
+        return contains(outer, inner) and not contains(inner, outer)
+    
+    def overlaps(a: dict, b: dict) -> bool:
+        return a["start"] < b["end"] and b["start"] < a["end"]
+
+    def priority(sp: dict) -> tuple:
+        return parts(sp), -sp["start"], sp["end"] - sp["start"], sp["probability"]
+
+    def rank(sp: dict) -> tuple:
+        return not sp["is_rejected"], parts(sp), sp["probability"]
+
+    def collapse(items: List[dict], key_fn, rank_fn) -> List[dict]:
+        best = {}
+        for sp in items:
+            key = key_fn(sp)
+            best[key] = max((best[key], sp), key=rank_fn) if key in best else sp
+        return list(best.values())
+
+    def filter_conflicts(items: List[dict], should_drop) -> List[dict]:
+        dropped = {
+            i for i, a in enumerate(items)
+            if any(i != j and should_drop(a, b) for j, b in enumerate(items))
+        }
+        groups = {items[i]["group_id"] for i in dropped if items[i].get("group_id")}
+        return [sp for i, sp in enumerate(items) if i not in dropped and sp.get("group_id") not in groups]
+
+    # 1. Схлопываем дубликаты с одинаковыми границами и surface.
+    candidates = collapse(
+        spans,
+        key_fn=lambda sp: (sp["start"], sp["end"], sp["surface"]),
+        rank_fn=lambda sp: sp["probability"],
+    )
+
+    # 2а. Конфликты между принятыми составными спанами.
+    candidates = filter_conflicts(
+        candidates,
+        should_drop=lambda a, b: (
+            not a["is_rejected"]
+            and not b["is_rejected"]
+            and parts(a) > 1
+            and parts(b) > 1
+            and contains(b, a)
+            and priority(b) > priority(a)
+        ),
+    )
+
+    # 2б. Конфликты между всеми принятыми спанами.
+    candidates = filter_conflicts(
+        candidates,
+        should_drop=lambda a, b: (
+            not a["is_rejected"]
+            and not b["is_rejected"]
+            and overlaps(a, b)
+            and priority(b) > priority(a)
+        ),
+    )
+
+    # 3а. Принятые спаны (b) убирают вложенные в них отклонённые (a)
+    # и отменяют покрывающие их отклонённые (a).
+    candidates = filter_conflicts(
+        candidates,
+        should_drop=lambda a, b: (
+            a["is_rejected"]
+            and not b["is_rejected"]
+            and (strictly_contains(b, a) or strictly_contains(a, b))
+        ),
+    )
+
+    # 3б. Среди отклонённых более длинные поглощают вложенные короткие.
+    candidates = filter_conflicts(
+        candidates,
+        should_drop=lambda a, b: (
+            a["is_rejected"]
+            and b["is_rejected"]
+            and strictly_contains(b, a)
+            and parts(a) <= parts(b)
+        ),
+    )
+
+    # 4. Финальная схлопка по одинаковым границам.
+    return collapse(
+        candidates,
+        key_fn=lambda sp: (sp["start"], sp["end"]),
+        rank_fn=rank,
+    )
 
 
 
@@ -681,3 +763,4 @@ def summarize_linkers(linker_sentence_results: List[list], threshold: float, wor
         "linkers_per_sentence_middle": _mean_linkers([counts[i] for i in middle]),
         "linkers_per_sentence_end": _mean_linkers([counts[i] for i in end]),
     }
+

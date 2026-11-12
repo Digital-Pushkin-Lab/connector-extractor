@@ -36,17 +36,8 @@ from nltk.tokenize import sent_tokenize
 import string
 
 
-# ---------------------------------------------------------------------------
-# Пути к extractor (точно как в gradio_app.py)
-# ---------------------------------------------------------------------------
-#sys.path.insert(0, os.path.join(os.path.dirname(__file__), ""))
-
 import stanza
-from pipeline import  build_engine
-
-#LINKERS_CSV = os.path.join(os.path.dirname(__file__),  "data", "linkers.tsv")
-
-#print("Loading stanza pipeline (tokenize,pos,lemma,depparse)...", file=sys.stderr)
+from rules import build_engine
 
 
 # увеличиваем объём этих слов в два раза. Причина - это сложные и частые (нужные) слова и фразы.
@@ -834,7 +825,7 @@ def main():
 
     dataset = NewDataset("src/wiki.tsv")
 
-    dataset.make_new_dataset(source_dir + "Категория_Астрономия", max_num=350 )
+    dataset.make_new_dataset(source_dir + "Категория_Астрономия", max_num=450 )
 #    dataset.make_new_dataset(source_dir + "Категория_Архитектура", max_num=985 )
 
 

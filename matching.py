@@ -109,7 +109,9 @@ def match_pattern(tokens, start: int, pattern: Pattern) -> Optional[List[Tuple[i
     return spans
 
 
-def extract_entities_from_sentence(engine, tokens_stanza, patterns: Sequence[Pattern], debug = False) -> List[dict]:
+
+
+def extract_entities_from_sentence_(engine, tokens_stanza, patterns: Sequence[Pattern], debug = False) -> List[dict]:
     """Greedily find non-overlapping pattern matches in a sentence's tokens,
     longest (most parts, then most words) first."""
 
@@ -159,6 +161,36 @@ def extract_entities_from_sentence(engine, tokens_stanza, patterns: Sequence[Pat
                 break
 
     return results
+
+
+
+def extract_entities_from_sentence(engine, tokens_stanza, patterns: Sequence[Pattern], debug = False) -> List[dict]:
+    """Находит все вхождения паттернов из словаря в предложении (включая вложенные)."""
+    tokens = []
+    for token_stanza in tokens_stanza:
+        tokens.append(Token(token_stanza, tokens))
+
+    results = []
+    pattern_index = build_pattern_index(patterns)
+
+    for i in range(len(tokens)):
+        first_word = tokens[i].s
+        candidates = pattern_index.get(first_word, ())
+
+        for pattern in candidates:
+            spans = match_pattern(tokens, i, pattern)
+
+            if spans:
+                parts = [tokens[s:e] for s, e in spans]
+                char_spans = [(part[0]["start_char"], part[-1]["end_char"]) for part in parts]
+                results.append(Phrase(parts, char_spans, pattern, engine))
+
+    return results
+
+
+
+
+
 
 #временно
 def pattern_surface(pattern: Pattern) -> str:

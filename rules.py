@@ -198,6 +198,13 @@ class Phrase:
     PunctBefore = ПунктуацияПеред = BitFlag(22)
     PunctBeforeAnyPart = ПунктуацияПередЛюбойЧастью = BitFlag(23)
 
+    # к закрывающей пунктуации не относится "открывающая": "(«" и т.п.
+    ClosedPunctAfter = ЗакрывающаяПунктуацияПосле = BitFlag(24)
+
+
+
+
+
     Prev_A_I = Предшествует_А_И = BitFlag(30)
     Next_ZheComma = СледуетЖеЗапятая = BitFlag(31) # Сейчас этот признак не используется в правилах
 
@@ -275,8 +282,11 @@ class Phrase:
         self.ConnectiveInEachPart = len(self.parts) > 1 and all(any(w["deprel"] in connective_deprel for w in part) for part in self.parts)
 
 
+        open_punct_str = "([«"
+
         #ПунктуацияПосле
-        self.PunctAfter = bool(self.next) and self.next.upos == "PUNCT" # Для правила NoSpaseAfter
+        self.PunctAfter = bool(self.next) and self.next.upos == "PUNCT" 
+        self.ClosedPunctAfter = self.PunctAfter and self.next.text not in open_punct_str # Для правила NoSpaseAfter
 
         #ПунктуацияВнутри
         self.PunctInside = any(word.next and word.next.upos == "PUNCT" for word in self.words[:-1]) # Для правила NoSpaseAfter
@@ -423,7 +433,7 @@ def rule_dependency_signal(phrase:Phrase):
 
 def rule_no_space_after(phrase:Phrase):
     '''Правило проверяет, что оборот в конце цепочки, либо после оборота пунктуация, либо пунктуация внутри'''
-    return +1 if phrase.EndPosition or phrase.PunctAfter or phrase.PunctInside else 0
+    return +1 if phrase.EndPosition or phrase.ClosedPunctAfter or phrase.PunctInside else 0
 
 # НЕИСПОЛЬЗУЕМЕ
 # сейчас не используется. Ранее называлась rule_single_part_only_part
@@ -571,7 +581,15 @@ def rule_phrase_in_list(phrase):
         return 2
     
 
-    #AS2 Добавляем блок. Эти слова штрафуем
+    #AS Эти слова штрафуем -1
+    triggers = """
+    будто
+    """
+    if in_triggers(texts, triggers):
+        return -1
+
+
+    #AS Эти слова штрафуем -2
     triggers = """
     что
     """
@@ -585,12 +603,29 @@ def rule_phrase_in_list(phrase):
 def rule_conjunction_i(phrase:Phrase):
     """Отдельный союз «и, или, либо» → сильный бонус; иначе 0."""
     
+    def not_upper(token):
+        return bool(token) and token.text.upper()!=token.text
+    
     word = phrase.first
     if not phrase.Len1 or not word.lemma in {"и", "или", "либо"}:
         return 0
 
+    if "Шуйского" in tokens2text(phrase.sent_tokens):
+        pass
+
+    conj_signal = word.upos == "CCONJ" or word.deprel in {"cc", "discourse", "fixed"}
+
+    #Корректируем ошибку Stanza отнесения И (инициал) к предлогу. Пример books14
+    if conj_signal and word.text=="И" and word.id>1: # капслок и не начало фразы
+        #убедимся, что у нас не всё предложение капслоком. Проверим два слоа до и два слова после
+        if (
+            word.prev and (not_upper(word.prev) or not_upper(word.prev.prev)) or
+            word.next and (not_upper(word.next) or not_upper(word.prev.next))
+            ): return 0
+    
+
     # типичные признаки сочинительного союза у Stanza
-    if word.upos == "CCONJ" or word.deprel in {"cc", "discourse", "fixed"}:
+    if conj_signal:
         return +2  # сдвиг p на 2/n (при n=5 → +0.4)core_entity
     return 0
 

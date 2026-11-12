@@ -38,7 +38,7 @@ from typing import List, Optional, Tuple
 import pandas as pd
 import time
 
-from pipeline import DEFAULT_THRESHOLD
+from pipeline import DEFAULT_THRESHOLD, Engine
 from rules import build_engine
 
 from tables import read_table
@@ -214,7 +214,7 @@ def evaluate_row(ref_ents: List[dict], pred_ents: List[dict]) -> dict:
 # =============================================================================
 
 
-def add_evaluation_columns(df: pd.DataFrame, engine) -> pd.DataFrame:
+def add_evaluation_columns(df: pd.DataFrame, engine:Engine) -> pd.DataFrame:
     """Прогоняет экстрактор по каждой строке и сохраняет результат оценки
     в колонки df: clean_text, pred_markup, status, tp/fp/fn_items, tp/fp/fn_*."""
 
@@ -229,8 +229,7 @@ def add_evaluation_columns(df: pd.DataFrame, engine) -> pd.DataFrame:
     # Только Stanza: пакетный парсинг в кэш.
     engine.preparse_texts(
         (clean for clean, _ in prepared_rows),
-        batch_size=32,
-        verbose = True,
+        verbose = True, # бегущая полоска
     )
 
     # Прежний путь извлечения и оценки.
@@ -238,33 +237,18 @@ def add_evaluation_columns(df: pd.DataFrame, engine) -> pd.DataFrame:
 
     for clean, ref_ents in prepared_rows:
 
-        # # Для отладки.
-        # if "Екатерина" in clean:
-        #     pass
+        # Для отладки.
+        if "Годунову донесли," in clean:
+            pass
 
         marked_text, _, spans=  engine.mark_text(clean)
 
-
-        # Для отладки.
-        if "Екатерина" in clean:
-            pass
-
-
         # Для метрик оставляем только неотклонённые элементы.
-        pred_ents = [
-            entity
-            for entity in spans
-            if not entity.get("is_rejected", False)
-        ]
+        pred_ents = [entity for entity in spans if not entity.get("is_rejected", False)]
 
         row = evaluate_row(ref_ents, pred_ents)
         row["clean_text"] = clean
-
-
-        pass
-        # В разметке сохраняем также отклонённые элементы.
         row["pred_markup"] = marked_text 
-
 
         records.append(row)
 
@@ -451,10 +435,10 @@ def main() -> pd.DataFrame:
     df = process_benchmark(args.benchmark, engine, n=args.limit, report_path=args.report, status=args.status)
     
     # а это блок функций, которые по готовому датасету выводят дополнительные отчёты в терминал для отладки. Тут в файл ничего не пишется, так как имя файла не передаётся
-#    debug_report(df, n=100, status="ERR") 
+    debug_report(df, n=100, status="ERR") 
 
-    debug_report(df, n=100, fragments=["и т.д.", "и дело", "или иной"])   
-#    debug_report(df, n=100, fragments=["Екатерина"])   
+#    debug_report(df, n=100, fragments=["и т.д.", "и дело", "или иной"])   
+#    debug_report(df, n=100, patterns=["будто"])   
 
 #   debug_report(df, n=100, fragments=["тогда", "теперь"])   
 
