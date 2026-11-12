@@ -109,7 +109,7 @@ def match_pattern(tokens, start: int, pattern: Pattern) -> Optional[List[Tuple[i
     return spans
 
 
-def extract_entities_from_sentence(tokens_stanza, patterns: Sequence[Pattern], debug = False) -> List[dict]:
+def extract_entities_from_sentence(engine, tokens_stanza, patterns: Sequence[Pattern], debug = False) -> List[dict]:
     """Greedily find non-overlapping pattern matches in a sentence's tokens,
     longest (most parts, then most words) first."""
 
@@ -155,7 +155,7 @@ def extract_entities_from_sentence(tokens_stanza, patterns: Sequence[Pattern], d
                     for k in range(s, e):
                         used[k] = True
 
-                results.append(Phrase(parts, char_spans, pattern))
+                results.append(Phrase(parts, char_spans, pattern, engine))
                 break
 
     return results
@@ -165,8 +165,3 @@ def pattern_surface(pattern: Pattern) -> str:
     return "...".join(" ".join(part) for part in pattern)
 
 
-def sentence_to_json(sentence: str, tokens, patterns: Sequence[Pattern], debug = False) -> dict:
-    return {
-        "sentence": sentence,
-        "entities": extract_entities_from_sentence(tokens, patterns, debug),
-    }

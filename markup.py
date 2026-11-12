@@ -22,14 +22,19 @@ markup.py
 Модуль исходно был создан по аналогии с gradio_app.py, так как тоже запускает разметку из ядра программы, а потом её интерпретирует.
 """
 
-import os, sys, re
+import sys, re, csv
 import pandas as pd
 from pathlib import Path
 
 from rules import in_triggers
 
+from typing import List, Tuple, Dict, Any
 
-from typing import List, Dict, Tuple
+
+import pandas as pd
+from nltk.tokenize import sent_tokenize
+import string
+
 
 # ---------------------------------------------------------------------------
 # Пути к extractor (точно как в gradio_app.py)
@@ -53,7 +58,6 @@ FOCUS_ON="""
 """
 
 
-
 def get_stanza():
     try:
         st = stanza.Pipeline('ru', processors="tokenize,pos,lemma,depparse", download_method=None, logging_level='ERROR')
@@ -72,11 +76,7 @@ def get_stanza():
 ENGINE = build_engine()
 
 
-
-# эта функция требует переработки и отнесения в pipiline/ENGINE с целью снижения дублирвоания кода
-# возможно её стоит отнести туда целиком
-
-
+# Функция создаёт датасет "старого типа". Пишет файл с разметкой. Используется для разметки датасета books
 def make_old_dataset(input_file_name: str, output_file_name: str) -> None:
     """Читает файл → размечает → сохраняет."""
     with open(input_file_name, "r", encoding="utf-8") as f:
@@ -121,9 +121,8 @@ def make_old_dataset(input_file_name: str, output_file_name: str) -> None:
     print(f"Готово: {output_file_name}", file=sys.stderr)
 
 
-import csv
 
-# функция использовалася для конвертации линкеров из csv в tsv
+# функция использовалась для конвертации линкеров из csv в tsv
 def csv2tsv(input_path: str = "data/linkers.csv", output_path: str = "data/linkers.tsv") -> None:
     """Читает CSV-файл и сохраняет его в формат TSV."""
     with open(input_path, mode="r", encoding="utf-8") as infile, \
@@ -137,15 +136,6 @@ def csv2tsv(input_path: str = "data/linkers.csv", output_path: str = "data/linke
 
 ### НОВАЯ РАЗМЕТКА #####
 
-
-import re
-import sys
-from pathlib import Path
-from typing import List, Tuple, Dict, Any
-
-import pandas as pd
-from nltk.tokenize import sent_tokenize
-import string
 
 class NewDataset:
     DATASET_COLUMNS = [
@@ -161,9 +151,6 @@ class NewDataset:
     # эти символы мы вырезаем перед проверкой похожести предложений
     PUNCTUATION_AND_SYMBOLS = string.punctuation + "«»“”„…—–−·•◦▪▫●○◆◇■□★☆➤➤➔→←↑↓"
 
-    # MARKUP_RE = re.compile(
-    #     r"\[[^\]]*\](?:=+[A-Za-zА-Яа-я0-9_]+)*"
-    # )
     MARKUP_RE = re.compile(
         r"\[([^\]]*)\](?:=+[A-Za-zА-Яа-я0-9_]+)*"
     )
@@ -219,12 +206,7 @@ class NewDataset:
             if "comment50" not in df.columns:
                 df["comment50"] = ""
 
-            df["comment50"] = (
-                df["comment50"]
-                .fillna("")
-                .astype(str)
-                .str.slice(0, 50)
-            )
+            df["comment50"] = df["comment50"].fillna("").astype(str).str.slice(0, 50)
 
             print(
                 f"Датасет загружен: {self.dataset_path}, строк: {len(df)}",
@@ -245,13 +227,10 @@ class NewDataset:
             if not text or text.startswith("#") or text.startswith("!"):
                 continue
 
-            main_pattern, pattern_type = (
-                self.parse_main_pattern_from_text(text)
-            )
+            main_pattern, pattern_type = self.parse_main_pattern_from_text(text)
 
             df.at[idx, "main_pattern"] = main_pattern
             df.at[idx, "type"] = pattern_type
-
 
 
         return df[self.WORK_COLUMNS]
@@ -855,7 +834,7 @@ def main():
 
     dataset = NewDataset("src/wiki.tsv")
 
-    dataset.make_new_dataset(source_dir + "Категория_Астрономия", max_num=300 )
+    dataset.make_new_dataset(source_dir + "Категория_Астрономия", max_num=350 )
 #    dataset.make_new_dataset(source_dir + "Категория_Архитектура", max_num=985 )
 
 

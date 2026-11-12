@@ -18,7 +18,7 @@ evaluate.py — оценка экстрактора коннекторов на 
 
 Формат эталонной разметки (см. шапку src/benchmark.tsv):
   [x]=linker / =other            — метка фрагмента (other в метрики не идёт);
-  [x]=linker0                    — первая часть составной конструкции;
+  [x]=linker1                    — первая часть составной конструкции;
   [x]=other=linker               — двойная метка, верна последняя;
   [x]==linker                    — baseline не нашёл даже омонима;
   метка intro из старых бенчмарков читается как linker;
@@ -38,10 +38,11 @@ from typing import List, Optional, Tuple
 import pandas as pd
 import time
 
-from pipeline import DEFAULT_THRESHOLD, build_engine
+from pipeline import DEFAULT_THRESHOLD
+from rules import build_engine
+
 from tables import read_table
 
-import pipeline 
 
 DEFAULT_BENCHMARK = "src/benchmark3_all_linkers.xlsx"
 
@@ -452,7 +453,7 @@ def main() -> pd.DataFrame:
     # а это блок функций, которые по готовому датасету выводят дополнительные отчёты в терминал для отладки. Тут в файл ничего не пишется, так как имя файла не передаётся
 #    debug_report(df, n=100, status="ERR") 
 
-#    debug_report(df, n=100, patterns=["как правило"])   
+    debug_report(df, n=100, fragments=["и т.д.", "и дело", "или иной"])   
 #    debug_report(df, n=100, fragments=["Екатерина"])   
 
 #   debug_report(df, n=100, fragments=["тогда", "теперь"])   

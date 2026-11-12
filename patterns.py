@@ -16,27 +16,36 @@ def normalize_ellipsis(expr: str) -> str:
     return expr.replace("…", "...")
 
 
+def split_expressions(expr: str) -> List[str]:
+    """Разделить выражение по запятым и очистить части от пробелов."""
+    parts = [part.strip() for part in expr.lower().split(",") if part.strip()]
+
+    return parts
+
+
 def linker_list_to_patterns(raw_expressions: List[str]) -> List[Pattern]:
     """Turn raw expressions like 'если ... то' into part tuples, e.g.
     (('если',), ('то',)). Deduplicates while preserving first-seen order."""
     patterns: List[Pattern] = []
 
-    for expr in raw_expressions:
-        expr = normalize_ellipsis(str(expr).strip().lower())
-        if not expr:
-            continue
+    for raw_expr in raw_expressions:
+        for expr in split_expressions(str(raw_expr)):
+            expr = normalize_ellipsis(expr)
+            if not expr:
+                continue
 
-        #AS Добавим пробел перед дефисом в списках паттернов для -то (есть "во-первых", "во-вторых" в них пробел вставлять не надо)
-        expr = expr.replace("-то", " -то").replace("  ", " ")
 
-        parts = []
-        for part in expr.split("..."):
-            words = tuple(part.strip().split())
-            if words:
-                parts.append(words)
+            #AS Добавим пробел перед дефисом в списках паттернов для -то (есть "во-первых", "во-вторых" в них пробел вставлять не надо)
+            expr = expr.replace("-то", " -то").replace("  ", " ")
 
-        if parts:
-            patterns.append(tuple(parts))
+            parts = []
+            for part in expr.split("..."):
+                words = tuple(part.strip().split())
+                if words:
+                    parts.append(words)
+
+            if parts:
+                patterns.append(tuple(parts))
 
     unique: List[Pattern] = []
     seen = set()

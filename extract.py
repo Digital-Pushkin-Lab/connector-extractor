@@ -29,11 +29,12 @@ from pipeline import (
 #    DEFAULT_LINKERS_CSV,
     DEFAULT_THRESHOLD,
     analyze_parsed,
-    build_engine,
     load_patterns,  # noqa: F401  (re-exported for callers that still `from extract import load_patterns`)
 #    parse_sentences, больше не используем, вызываем из engine.parse_sentences()
     summarize_linkers,
 )
+from rules import build_engine
+
 from tables import pick_text_column, read_table, write_table
 
 # Табличные расширения: такой --output для одиночного текста пишется
@@ -42,9 +43,9 @@ from tables import pick_text_column, read_table, write_table
 TABLE_EXTENSIONS = {".csv", ".tsv", ".xlsx"}
 
 
-def compute_stats(parsed_sentences, patterns_by_type: dict, checker, threshold: float, word_count: int) -> dict:
-    linker_results = analyze_parsed(parsed_sentences, checker, patterns_by_type["linker"])
-    return summarize_linkers(linker_results, threshold, word_count, parsed_sentences)
+def compute_stats(parsed_sentences, checker, word_count: int) -> dict:
+    linker_results = analyze_parsed(parsed_sentences, checker, checker.patterns_by_type["linker"])
+    return summarize_linkers(linker_results, checker.threshold, word_count, parsed_sentences)
 
 
 def parse_args():
@@ -87,9 +88,9 @@ def get_ext(file_name):
     return Path(file_name).suffix
 
 
-def run_single(text, engine, threshold, output_path):
+def run_single(text, engine, output_path):
     parsed_sentences, word_count = engine.parse_sentences(text)
-    stats = compute_stats(parsed_sentences, engine.patterns_by_type, engine.checker, threshold, word_count)
+    stats = compute_stats(parsed_sentences, engine, word_count)
 
     if output_path and get_ext(output_path).lower() in TABLE_EXTENSIONS:
         # те же колонки, что и у строки пакетного режима: текст + статистика
@@ -105,7 +106,7 @@ def run_single(text, engine, threshold, output_path):
         print(output_json)
 
 
-def run_batch(input_csv, text_column, output_path, engine, threshold):
+def run_batch(input_csv, text_column, output_path, engine):
     # Reads .csv (comma) or .tsv/.txt/.xlsx (tab / sheet); see tables.read_table.
     df = read_table(input_csv)
 
@@ -134,9 +135,7 @@ def run_batch(input_csv, text_column, output_path, engine, threshold):
         rows.append(
             compute_stats(
                 parsed_sentences,
-                engine.patterns_by_type,
-                engine.checker,
-                threshold,
+                engine,
                 word_count,
             )
         )
@@ -165,20 +164,20 @@ def run(args, engine):
     """Dispatch to batch or single-text mode based on `args`."""
     table = table_input(args)
     if table:
-        run_batch(table, args.text_column, args.output, engine, args.threshold)
+        run_batch(table, args.text_column, args.output, engine)
     else:
         text = args.text if args.text is not None else Path(args.input_file).read_text(encoding="utf-8")
-        run_single(text, engine, args.threshold, args.output)
+        run_single(text, engine, args.output)
 
 
 def main():
     args = parse_args()
 
-    # для отлдки
-    if not args.input_file:
-        args.input_file = "src/books_.tsv"
-    if not args.output:
-        args.output = "src/result.tsv"
+    # # для отлдки
+    # if not args.input_file:
+    #     args.input_file = "src/books_.tsv"
+    # if not args.output:
+    #     args.output = "src/result.tsv"
 
     table = table_input(args)
     if table and not args.output:
@@ -187,7 +186,7 @@ def main():
         print("Warning: --text-column is ignored: the input is a single text, not a table.", file=sys.stderr)
 
     print("Loading stanza pipeline (tokenize,pos,lemma,depparse)...", file=sys.stderr)
-    engine = build_engine(args.linkers_csv)
+    engine = build_engine(args.linkers_csv, threshold=args.threshold)
 
     run(args, engine)
 

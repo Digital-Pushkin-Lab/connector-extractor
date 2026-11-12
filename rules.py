@@ -7,10 +7,10 @@ Ported from `RuleBasedLinkerChecker` and its `rule_*` functions in
 """
 
 from typing import Callable, Dict, List
-
+from pipeline import Engine
 
 from pyroaring import BitMap
-
+from pipeline import Engine, load_patterns
 
 class BitFlag:
     """Булев атрибут, хранящий значение в bitmap с автоматической проверкой типа."""
@@ -84,13 +84,6 @@ class Token:
         self.tokens = tokens         # ключевой момент. Токены исходного предложения с типом Token
 
 
-    # @property
-    # def f(self) -> TokenFeatures:
-    #     """Признаки токена с ленивым вычислением."""
-    #     if self._f is None:
-    #         self.assemble_token_info()
-    #     return self._f
-
     def index(self):
         return self.tokens.index(self)
 
@@ -130,10 +123,10 @@ class Token:
         if not self.head_id or not self.id or not self.tokens:
             return None
         
-        # Вычисляем относительное смещение в нумерации ID Stanza
-        offset = self.head_id - self.id
-        # Находим целевой индекс в списке tokens предложения
-        target_idx = self.index() + offset
+        # наша последовательность self.tokens должна содержать одно предложение, но не обязательно.
+        # Для нажёжности считаем относительную, а не абсолютную адресацию
+        offset = self.head_id - self.id         # Вычисляем относительное смещение в нумерации ID Stanza
+        target_idx = self.index() + offset      # Находим целевой индекс в списке tokens предложения
         
         if 0 <= target_idx < len(self.tokens):
             return self.tokens[target_idx]
@@ -151,6 +144,7 @@ class Token:
         return ""
     
     def __repr__(self):
+        """Выводит представление токена в отладку"""
         # Выводим (lemma) только если s и lemma не совпадают
         # .s - всегда в нижнем регистре, а .lemma может быть в верхнем, если это имя, поэтому переведём её в нижний
         lemma_str = f"({self.lemma!r})" if self.s != self.lemma.lower() else ""  
@@ -165,11 +159,6 @@ class Token:
         
     def __str__(self):
         return self.__repr__()
-
-    # # Для совместимости с существующим кодом.
-    # def to_dict(self):
-    #     return self.std_
-
 
     def get(self, key, default=None):
         return self.info.get(key, default)
@@ -190,7 +179,7 @@ class Phrase:
     Parataxis = ВводнаяКонструкция = BitFlag(3) # Отношение между главным предложением и соседней независимой конструкцией. Сюда относятся вводные слова, пояснения или прямая речь (например, «как мне кажется», «сказал он»).
     Discourse = ДискурсивныйМаркер = BitFlag(4) # Элементы речи, которые не несут синтаксической нагрузки, но важны для структуры диалога или выражения эмоций. Это междометия, частицы, маркеры ответа и привлечения внимания (например, «ну», «ого», «ведь»).
     CC = Coordinating = СочинительныйCоюз = BitFlag(5)  # Отношение между элементом предложения и сочинительным союзом, который его связывает (например, союзы «и», «а», «но»).
-    Marker  = ПодчинительныйМаркер  = BitFlag(6) # Отношение между придаточным предложением и подчинительным союзом (или инфинитивной частицей), который его вводит (например, «чтобы», «если», «потому что»).
+    Mark = Marker  = ПодчинительныйМаркер  = BitFlag(6) # Отношение между придаточным предложением и подчинительным союзом (или инфинитивной частицей), который его вводит (например, «чтобы», «если», «потому что»).
     Fixed  = ФиксированноеВыражение = BitFlag(7) # Используется для связи слов внутри застывших, неразложимых грамматических конструкций и многословных союзов. Первое слово становится главным, а остальные привязываются к нему через fixed (например, «в то время как», «в связи с»).    
 
     Parenthetical = Поясняющий = BitFlag(8) # Вводные элементы: вводные слова (parataxis) и частицы (discourse) 
@@ -213,12 +202,12 @@ class Phrase:
     Next_ZheComma = СледуетЖеЗапятая = BitFlag(31) # Сейчас этот признак не используется в правилах
 
     BspSignalBefore = БспСигналПеред = BitFlag(41) # аббревиатуру БСП (Asyndetic Compound Sentence) в русскоязычных NLP-проектах часто оставляют транслитом для простоты
-
     DependentAfter = ЗависимоеПосле = BitFlag(42) # Зависимое от последнего токена фразы слово идёт сразу после фразы не считая пунктуации
-
+ 
     LastHeadAfter = ПоследнегоГлавноеСправа = BitFlag(50) # Главное слово последнего токена фразы справа
-
 #    FirstHeadLeft = ПервогоГлавноеСлева = BitFlag(60) # Главное слово первого токена фразы слева
+
+
 
     # ПРИЗНАКИ С ПРАВИЛ, КОТОРЫЕ БОЛЬШЕ НЕ ИСПОЛЬЗУЮТСЯ
     LinkInEachPart = СвязьВКаждойЧасти = BitFlag(70) 
@@ -226,8 +215,12 @@ class Phrase:
     PronAfterAdp = МестоимениеПослеПредлога = BitFlag(72) 
     HeadNextToken = ВершинаСледующийТокен = BitFlag(73) 
 
+    # ЕЩЁ ПРИЗНАКИ
+    PhraseInSet = ФразаВУстойчивомВыражении = BitFlag(80) 
 
-    def __init__(self, parts, spans, pattern):
+
+    def __init__(self, parts, spans, pattern, engine):
+        self.engine = engine
         self.parts = parts
         self.spans = spans
         self.pattern = pattern
@@ -273,8 +266,7 @@ class Phrase:
         
         self.Structural = self.Parenthetical or self.Connective
 
-        
-
+     
         self.Complex = len(self.parts) > 1
         self.Len1 = len(self.words) == 1
 
@@ -294,7 +286,6 @@ class Phrase:
 
         #ПунктуацияПередЛюбойЧастью
         self.PunctBeforeAnyPart =  any(part and part[0].prev and part[0].prev.upos == "PUNCT" for part in self.parts)
-
 
 
         self.Prev_A_I = bool(self.prev) and self.prev.lemma in {"а", "и"}
@@ -332,7 +323,7 @@ class Phrase:
 
         self.LastHeadAfter = bool(last) and bool(last.id) and bool(last.head_id) and last.head_id > last.id
 
-        # ПРИЗНАКИ ПРАВИЛ, КОТОРЫЕНЕ ИСПОЛЬЗУЮТСЯ
+        # ПРИЗНАКИ ПРАВИЛ, КОТОРЫЕ НЕ ИСПОЛЬЗУЮТСЯ
         # СвязьВКаждойЧасти
         self.LinkInEachPart = True if all(any(w.upos in {"SCONJ", "CCONJ", "ADV"} for w in part) for part in self.parts) else False
         # ОднаЧастица
@@ -345,7 +336,33 @@ class Phrase:
             bool(w.next) and w.head_id == w.next.id
             for part in self.parts
             for w in part )
+        
+        # Фраза входит в устойчивое выражение
+        self.PhraseInSet = self._check_phrase_in_set()        
 
+    def _check_phrase_in_set(self) -> bool:
+        """Проверяет, входит ли хотя бы одно слово фразы в устойчивое выражение из engine.sets."""
+        if not self.engine or not getattr(self.engine, "sets_by_word", None):
+            return False
+
+        sent_words = [t.s for t in self.sent_tokens]
+        n_sent = len(sent_words)
+
+        for w in self.words:
+            candidates = self.engine.sets_by_word.get(w.s)
+            if not candidates:
+                continue
+
+            tok_idx = w.index()
+            for expr, pos_in_expr in candidates:
+                start = tok_idx - pos_in_expr
+                end = start + len(expr)
+
+                if start >= 0 and end <= n_sent:
+                    if tuple(sent_words[start:end]) == expr:
+                        return True
+
+        return False
 
     @property
     def first(self):
@@ -373,16 +390,11 @@ class Phrase:
         Принимает: строку (одну лемму) или коллекцию лемм (set, list, tuple).
         Возвращает: Объект Token или None.
         """
-        if isinstance(lemmas, str):
-            lemmas = {lemmas}
-        else:
-            lemmas = set(lemmas)
-
+        lemmas = {lemmas} if isinstance(lemmas, str) else set(lemmas)
         return next((w for w in self.words if w.lemma in lemmas), None)  
-      
+
     def get(self, key, default=None):
         return getattr(self, key, default)
-    
 
     def __getitem__(self, key):
         try:
@@ -398,53 +410,29 @@ class Phrase:
 
 def rule_sentence_initial(phrase:Phrase):
     '''Фраза в начале предложения'''
-    if phrase.SentenceInitial:
-        return +1
-    return 0
+    return +1 if phrase.SentenceInitial else 0
 
 def rule_punct_before(phrase:Phrase):
     '''Пунктуация перед фразой или её отдельной частью'''
-
-    if phrase.PunctBeforeAnyPart:
-        return +1
-    return 0
-
+    return +1 if phrase.PunctBeforeAnyPart else 0
 
 def rule_dependency_signal(phrase:Phrase):
     '''Вводные слова или связующие элементы в простой фразе, либо связующие элементы в каждой части сложной фразы'''
-
-    # 1. Any word has a target dependency relation
-    if phrase.Structural:
-        return +1
-
-    # 2. All parts of a split phrase contain a core connective relation
-    if phrase.ConnectiveInEachPart:
-        return +1
-
-    return 0
+    # Any word has a target dependency relation or All parts of a split phrase contain a core connective relation
+    return +1 if phrase.Structural or phrase.ConnectiveInEachPart else 0
 
 def rule_no_space_after(phrase:Phrase):
-    if phrase.EndPosition or phrase.PunctAfter or phrase.PunctInside:
-        return +1
-    return 0
+    '''Правило проверяет, что оборот в конце цепочки, либо после оборота пунктуация, либо пунктуация внутри'''
+    return +1 if phrase.EndPosition or phrase.PunctAfter or phrase.PunctInside else 0
 
-# сейчас не используется
-# Ранее называлась rule_single_part_only_part
+# НЕИСПОЛЬЗУЕМЕ
+# сейчас не используется. Ранее называлась rule_single_part_only_part
 def rule_single_particle(phrase):
- 
-    if phrase.SingleParticle:
-        return -1
-    return 0
+     return -1 if phrase.SingleParticle else 0
 
-
-
-# сейчас не используется
-# ранее назыалась rule_pos_per_part
+# сейчас не используется. Ранее назыалась rule_pos_per_part
 def rule_link_in_each_part(phrase:Phrase):
     return +1 if Phrase.LinkInEachPart else 0
-
-
-
 
 # сейчас не используется
 def rule_pron_after_adp(phrase:Phrase):
@@ -455,16 +443,11 @@ def rule_my_head_is_next_tokens_id(phrase):
     return +1 if phrase.HeadNextToken else 0
 
 # Это правило упрощено. Тут ещё была проверка на "же," после оборота, но она фактически не давала эффекта. 
-# Такой прихнак на "же," добавлен в признаки, но удалён из этого правила
+# Анализ "же," добавлен в признаки, но удалён из этого правила
 def rule_introductory_potential(phrase:Phrase):
-    
     """A trailing a leading 'а'/'и', is tolerated around an introductory construction."""
+    return +1 if phrase.Prev_A_I else 0
 
-    if phrase.Prev_A_I:
-        return +1
-    
-    return 0
-         
 
 
 # используем также в markup.py
@@ -500,7 +483,7 @@ def rule_pri_etom_dependent(phrase):
     #AS2 добавили: как 
     triggers = """
     при этом
-    в результате, в итоге,
+    в итоге,
     как, как правило
     в то же время
     к тому же
@@ -515,7 +498,6 @@ def rule_pri_etom_dependent(phrase):
 
     if not in_triggers(texts, triggers):
         return 0
-
 
     # есть заависимое от последнего слова фразы после него
     if phrase.DependentAfter: 
@@ -539,10 +521,7 @@ def rule_phrase_in_list(phrase):
     # Смысл тут в том, что некоторые обороты являются всегда коннекторами
 
 
-
-
-    words = phrase.words
-    texts = tuple(w.get("text", "").lower() for w in words)  # tuple, не list
+    texts = tuple(word.s for word in phrase.words)  # tuple, не list
 
     #AS2 добавляем "однако" и другие
     triggers = """
@@ -570,6 +549,7 @@ def rule_phrase_in_list(phrase):
     в тот же
     тогда как
     и потому
+    в результате # перенесено из "при этом"
 #    наряду с  # надо разбираться со случаями употребления
     """
 
@@ -616,10 +596,14 @@ def rule_conjunction_i(phrase:Phrase):
 
 
 def rule_special(phrase:Phrase):
-    """Специфические контекстные правила для сложных одиночных коннекторов."""
+    """Специфические контекстные правила для коннекторов."""
     if not phrase.words:
         return 0
     first = phrase.first
+
+    if phrase.PhraseInSet:
+        return -3
+        
 
     # Правило на одиночную "же"
     if phrase.Len1 and first.s=="же":
@@ -639,7 +623,7 @@ def rule_special(phrase:Phrase):
 
             if prev.prev and prev.prev.text in [":", "—", ";", ","]:
                 if prev.upos in {"NOUN", "PRON", "PROPN", "DET"}:
-                        return +2
+                    return +2
 
             return 0
 
@@ -696,20 +680,31 @@ def rule_time_connector(phrase:Phrase):
   
     return 0
 
-class RuleBasedLinkerChecker:
-    def __init__(self):
-        self.rules: List[Callable[[Dict[str, list]], int]] = []
-        self.extra_rules: List[Callable[[Dict[str, list]], int]] = []  #AS Добавляем экстра правила, они не попадают в знаменатель дроби
+class EngineChecker(Engine):
+    def __init__(
+        self,
+        nlp: object = None,
+        patterns_by_type: dict = None,
+        threshold: float = None,
+    ) -> None:
+        super().__init__(
+            nlp=nlp,
+            patterns_by_type=patterns_by_type,
+            threshold=threshold,
+        )
+
+        self.rules: List[Callable] = []
+        self.extra_rules: List[Callable] = []  # Экстра-правила не попадают в знаменатель дроби
 
     def add_rule(self, rule_fn):
         self.rules.append(rule_fn)
 
-    def add_extra_rule(self, rule_fn):  #AS экстра-парвила
+    def add_extra_rule(self, rule_fn):  # экстра-парвила
         """Правило, которое при 0 не влияет на probability."""
         self.extra_rules.append(rule_fn)
 
 
-    #AS Метод доработан. 1. Добавлены экстра-правила 2. Добавлены отладочные сообщения    
+    #AS Экстра правила
     def score_entity(self, phrase, debug: bool = False) -> float:
         """entity: {"surface": ..., "parts": {part1: [...], ...}}"""
         n = len(self.rules)
@@ -724,7 +719,7 @@ class RuleBasedLinkerChecker:
         extra_votes = []
         step = 1.0 / n if n else 1.0
         for rule in getattr(self, "extra_rules", []):
-            v = rule(phrase) 
+            v = rule(phrase)
             extra_votes.append((rule.__name__, v))
             if v != 0:
                 p += v * step
@@ -741,7 +736,7 @@ class RuleBasedLinkerChecker:
         return p
 
     def score_sentence(self, sentence_json: dict, debug: bool = False) -> List[dict]:
-        results = []
+
         if debug:
             print(sentence_json.get('sentence'))
 
@@ -752,10 +747,26 @@ class RuleBasedLinkerChecker:
         return phrases
 
 
-def build_default_checker() -> RuleBasedLinkerChecker:
-    """The rule set actually used to score the real-data runs in the
-    notebook (see cell enabling/disabling rules before `get_stats`)."""
-    checker = RuleBasedLinkerChecker()
+# функция используется для создания экземпляра класса EngineChecher во всех вызовах, кроме Gradio (Gradio вызывает build_default_checker, пока это сохранено)
+def build_engine(linkers_csv: str = None, nlp=None, threshold: float = None) -> EngineChecker:
+    patterns = load_patterns(linkers_csv) if linkers_csv else None  
+    return build_default_checker(nlp=nlp, patterns_by_type=patterns, threshold=threshold)
+
+
+
+#Дананя функция вызывается из Gradio её интерфейс сохранён для совместимости
+def build_default_checker(
+    nlp: object = None,
+    patterns_by_type: dict = None,
+    threshold: float = None,
+) -> EngineChecker:
+    """Создаёт экземпляр EngineChecker и регистрирует стандартный набор правил."""
+
+    checker = EngineChecker(
+        nlp=nlp,
+        patterns_by_type=patterns_by_type,
+        threshold=threshold,
+    )
 
     
     checker.add_rule(rule_sentence_initial) #+1 если оборот в начале предложения
@@ -763,7 +774,7 @@ def build_default_checker() -> RuleBasedLinkerChecker:
     checker.add_rule(rule_dependency_signal) #+1 если есть маркеры "parataxis", "discourse", "cc", "mark", "fixed"
     checker.add_rule(rule_no_space_after) #+1 если пунктуация после оборота, внутри оборота или оборот в конце текста
 
-    checker.add_rule(rule_introductory_potential) # "а" или "и" перед оборотом, либо "же," после оборота
+    checker.add_rule(rule_introductory_potential) # "а", "и" перед оборотом
 
 
     checker.add_extra_rule(rule_pri_etom_dependent)  # AS Добавляем экстра-правило. Также см комментарий к функции rule_pri_etom_dependent
@@ -784,25 +795,15 @@ def tokens2text(tokens) -> str:
         return ""
         
     result = []
-    for i, token in enumerate(tokens):
-        text = token.text
-        # Безопасно приводим misc к строке, даже если там None или dict
-        misc = str(token.st.misc) if token.st.misc else ""
+    for token in tokens:
+        result.append(token.text)
         
-        result.append(text)
-        
+        if token.next:
+            # пробел перед этими знаками препинания ставить не нужно.
+            if token.next.text in ",.!?:;)]»": continue
 
-            
-        # Умная лингвистическая подстраховка для знаков препинания:
-        # Если следующий токен — это запятая, точка, двоеточие, закрывающая кавычка или скобка,
-        # пробел перед ними ставить НЕ нужно.
-        if i + 1 < len(tokens):
-            next_text = tokens[i + 1].text
-            if next_text in {",", ".", "!", "?", ":", ";", ")", "]", "»"}:
-                continue
             # Если текущий токен — открывающая кавычка или скобка, после неё пробел не нужен
-            if text in {"(", "[", "«"}:
-                continue
+            if token.text in "([«": continue
                 
         result.append(" ")
         

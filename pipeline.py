@@ -23,10 +23,10 @@ from tqdm.auto import tqdm
 
 from razdel import sentenize
 
-from matching import Pattern, sentence_to_json
 from patterns import build_patterns_from_csv
 
 from collections import defaultdict #для сортирвоки
+import csv
 
 DEFAULT_THRESHOLD = 0.4
 
@@ -74,18 +74,80 @@ class Engine:
     def __init__(
         self,
         nlp: object,
-        checker: object,
+#        checker: object,
         patterns_by_type: dict,
         threshold=DEFAULT_THRESHOLD,        
     ) -> None:
-        self.nlp = nlp
-        self.checker = checker
-        self.patterns_by_type = patterns_by_type
-        self.threshold = threshold
+        self.nlp = self.build_nlp(nlp)
+        self.patterns_by_type = (
+            patterns_by_type
+            if patterns_by_type is not None
+            else load_patterns()
+        )
+        self.threshold = threshold if threshold is not None else DEFAULT_THRESHOLD
+
+
+        # Список устойчивых выражений (каждое выражение — кортеж токенов в нижнем регистре)
+        self.sets: List[Tuple[str, ...]] = []
+        # Кэш-индекс по словам: слово -> список (выражение, позиция_слова_в_выражении)
+        self.sets_by_word: Dict[str, List[Tuple[Tuple[str, ...], int]]] = defaultdict(list)
+
 
         # Кэш разметки Stanza
         self._sentence_cache: Dict[str, object] = {}
 
+        self.load_sets()
+        pass
+
+    def build_nlp(self, nlp=None):
+        """Construct the stanza pipeline. Downloads the stanza `ru` model on
+        first use if it is missing. Pass `nlp` to reuse an existing pipeline."""
+        if nlp is None:
+            import stanza
+            processors = "tokenize,pos,lemma,depparse"
+            try:
+                nlp = stanza.Pipeline("ru", processors=processors,
+                                      download_method=None, logging_level="ERROR")
+            except Exception:
+                stanza.download("ru")
+                nlp = stanza.Pipeline("ru", processors=processors,
+                                      logging_level="ERROR")
+        return nlp
+
+    def load_sets(self, file_name: str = None) -> None:
+        """Загрузить устойчивые выражения из TSV-файла и проиндексировать по словам.
+
+        Берётся первая колонка файла. Строки, начинающиеся с `#`,
+        считаются комментариями и пропускаются.
+        """
+        if file_name is None:
+            file_name = str(DATA_DIR / "sets.tsv")
+
+        self.sets = []
+        self.sets_by_word = defaultdict(list)
+
+        path = Path(file_name)
+        if not path.exists():
+            return
+
+        with open(path, "r", encoding="utf-8") as file:
+            reader = csv.reader(file, delimiter="\t")
+
+            for row in reader:
+                if not row:
+                    continue
+
+                expression = row[0].strip()
+
+                if not expression or expression.startswith("#"):
+                    continue
+
+                tokens = tuple(expression.lower().split())
+
+                if tokens:
+                    self.sets.append(tokens)
+                    for idx, word in enumerate(tokens):
+                        self.sets_by_word[word].append((tokens, idx))
 
     def preparse_texts(
         self,
@@ -225,6 +287,18 @@ class Engine:
                 paragraph += 1
 
         return parsed_sentences, word_count
+    
+    # функция перенесена из matching.py
+    def sentence_to_json(self, sentence: str, tokens, patterns=None, debug: bool = False) -> dict:
+        from matching import extract_entities_from_sentence
+
+        if patterns is None:
+            patterns = self.patterns_by_type.get("linker", ())
+
+        return {
+            "sentence": sentence,
+            "entities": extract_entities_from_sentence(self, tokens, patterns, debug),
+        }
 
     def clear_parse_cache(self) -> None:
         """Освободить результаты разбора."""
@@ -246,7 +320,7 @@ class Engine:
 
         spans = extract_spans(
             parsed_sentences,
-            self.checker,
+            self,
             self.patterns_by_type,
             return_rejected=True
         )
@@ -360,35 +434,36 @@ def parse_sentences(text: str, nlp) -> Tuple[List[tuple], int]:
     print("Вызвана устаревшая функция-обёртка parse_sentences(text: str, nlp). Требуется переписать через engine.parse_sentences(text) !!!")
 
     # создаём упрощённый Engine без чекера и паттернов, только Stanza
-    engine = Engine(nlp=nlp, checker=None, patterns_by_type=None)
+#    engine = Engine(nlp=nlp, checker=None, patterns_by_type=None)
+    engine = Engine(nlp=nlp, patterns_by_type={})    
 
     # вызываем функцию из engine
     return engine.parse_sentences(text)
 
 
 
-def build_engine(linkers_csv: str = None, nlp=None, threshold=DEFAULT_THRESHOLD) -> Engine:
-    """Construct the extractor engine. Downloads the stanza `ru` model on
-    first use if it is missing. Pass `nlp` to reuse an existing pipeline."""
-    from rules import build_default_checker
+# def build_engine(linkers_csv: str = None, nlp=None, threshold=DEFAULT_THRESHOLD) -> Engine:
+#     """Construct the extractor engine. Downloads the stanza `ru` model on
+#     first use if it is missing. Pass `nlp` to reuse an existing pipeline."""
+#     from rules import build_default_checker
 
-    if nlp is None:
-        import stanza
-        processors = "tokenize,pos,lemma,depparse"
-        try:
-            nlp = stanza.Pipeline("ru", processors=processors,
-                                  download_method=None, logging_level="ERROR")
-        except Exception:
-            stanza.download("ru")
-            nlp = stanza.Pipeline("ru", processors=processors,
-                                  logging_level="ERROR")
+#     if nlp is None:
+#         import stanza
+#         processors = "tokenize,pos,lemma,depparse"
+#         try:
+#             nlp = stanza.Pipeline("ru", processors=processors,
+#                                   download_method=None, logging_level="ERROR")
+#         except Exception:
+#             stanza.download("ru")
+#             nlp = stanza.Pipeline("ru", processors=processors,
+#                                   logging_level="ERROR")
 
-    return Engine(
-        nlp=nlp,
-        checker=build_default_checker(),
-        patterns_by_type=load_patterns(linkers_csv),
-        threshold = threshold,
-    )
+#     return Engine(
+#         nlp=nlp,
+#         checker=build_default_checker(),
+#         patterns_by_type=load_patterns(linkers_csv),
+#         threshold = threshold,
+#     )
 
 
 def round_half_up(value: float, ndigits: int = 1) -> float:
@@ -407,11 +482,12 @@ def analyze_parsed(parsed_sentences: List[tuple], checker, patterns: Sequence[Pa
     """Run one match+score pass of `patterns` over sentences already parsed
     by `parse_sentences`. Returns one result list per razdel sentence, with
     the matches from all of its stanza parts pooled together."""
+
     sentence_results = []
     for sentence_text, parts, *_ in parsed_sentences:
         scored = []
         for tokens in parts:
-            sentence_json = sentence_to_json(sentence_text, tokens, patterns)
+            sentence_json = checker.sentence_to_json(sentence_text, tokens, patterns)
             scored.extend(checker.score_sentence(sentence_json))
         sentence_results.append(scored)
     return sentence_results
@@ -443,7 +519,7 @@ def extract_spans(
         for tokens in parts:
 
             for type_name, patterns in patterns_by_type.items():
-                sentence_json = sentence_to_json(sentence_text, tokens, patterns, debug)
+                sentence_json = checker.sentence_to_json(sentence_text, tokens, patterns, debug)
                 phrases = checker.score_sentence(sentence_json, debug=debug)
                 for phrase in phrases:
                     # Общий group_id для всех частей одного (возможно, разрывного)
