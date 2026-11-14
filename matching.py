@@ -11,7 +11,7 @@ from typing import List, Optional, Sequence, Tuple
 from collections import defaultdict
 #from bisect import bisect_left
 
-from rules import Token, Phrase
+from rules import Token, PhraseC
 
 Part = Tuple[str, ...]
 Pattern = Tuple[Part, ...]
@@ -110,12 +110,8 @@ def match_pattern(tokens, start: int, pattern: Pattern) -> Optional[List[Tuple[i
 
 
 
-
-def extract_entities_from_sentence_(engine, tokens_stanza, patterns: Sequence[Pattern], debug = False) -> List[dict]:
-    """Greedily find non-overlapping pattern matches in a sentence's tokens,
-    longest (most parts, then most words) first."""
-
-    # Создаём список наших токенов, далее работаем с ними в том числе и в правилах
+def extract_entities_from_sentence(engine, tokens_stanza, patterns: Sequence[Pattern], debug = False) -> List[dict]:
+    """Находит все вхождения паттернов из словаря в предложении (включая вложенные)."""
     tokens = []
     for token_stanza in tokens_stanza:
         tokens.append(Token(token_stanza, tokens))
@@ -124,17 +120,10 @@ def extract_entities_from_sentence_(engine, tokens_stanza, patterns: Sequence[Pa
     if debug:
         pass
 
-    used = [False] * len(tokens)
     results = []
-
-
-    #функция готовит паттерны один раз, и не на предложение, а вообще, так как внутри используется кэш
-    pattern_index = build_pattern_index(patterns) 
+    pattern_index = build_pattern_index(patterns)
 
     for i in range(len(tokens)):
-        if used[i]:
-            continue
-
         first_word = tokens[i].s
         candidates = pattern_index.get(first_word, ())
 
@@ -147,43 +136,9 @@ def extract_entities_from_sentence_(engine, tokens_stanza, patterns: Sequence[Pa
             spans = match_pattern(tokens, i, pattern)
 
             if spans:
-                if debug:
-                    pass
-
                 parts = [tokens[s:e] for s, e in spans]
                 char_spans = [(part[0]["start_char"], part[-1]["end_char"]) for part in parts]
-
-                for s, e in spans:
-                    for k in range(s, e):
-                        used[k] = True
-
-                results.append(Phrase(parts, char_spans, pattern, engine))
-                break
-
-    return results
-
-
-
-def extract_entities_from_sentence(engine, tokens_stanza, patterns: Sequence[Pattern], debug = False) -> List[dict]:
-    """Находит все вхождения паттернов из словаря в предложении (включая вложенные)."""
-    tokens = []
-    for token_stanza in tokens_stanza:
-        tokens.append(Token(token_stanza, tokens))
-
-    results = []
-    pattern_index = build_pattern_index(patterns)
-
-    for i in range(len(tokens)):
-        first_word = tokens[i].s
-        candidates = pattern_index.get(first_word, ())
-
-        for pattern in candidates:
-            spans = match_pattern(tokens, i, pattern)
-
-            if spans:
-                parts = [tokens[s:e] for s, e in spans]
-                char_spans = [(part[0]["start_char"], part[-1]["end_char"]) for part in parts]
-                results.append(Phrase(parts, char_spans, pattern, engine))
+                results.append(PhraseC(parts, char_spans, pattern, engine))
 
     return results
 

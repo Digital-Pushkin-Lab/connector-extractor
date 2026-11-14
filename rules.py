@@ -75,7 +75,7 @@ class Token:
     # }
 
     def __init__(self, token_stanza, tokens):
-        self.st = token_stanza    # Stanza или Stanza Token (для Spacy Token, впрочем, будет sp)
+        self.st = token_stanza    # Stanza или Stanza Token (для Spacy Token будет sp)
         st_dict = token_stanza.to_dict()
         self.info =st_dict[0]   # Первое слово из токена Stanza превращённого в словарь. Для доступа к инфорамции Stanaza через интерфейс словаря
 
@@ -167,8 +167,74 @@ class Token:
         return self.info[key]
 
 
-
 class Phrase:
+    """Универсальный класс для найденной фразы (возможно, разрывной)."""
+
+    def __init__(self, parts, spans, pattern, engine=None):
+        self.engine = engine
+        self.parts = parts
+        self.spans = spans
+        self.pattern = pattern
+        self.surface = "...".join(" ".join(part) for part in pattern)
+        self.words = [word for part in parts for word in part]  # токены фразы
+        self.sent_tokens = self.words[0].tokens if self.words else []  # токены предложения
+        self.verbose = False # для отладки. Если установить флаг, то в правилах выведется большое отладочное сообщение
+
+        # Хранилище бинарных признаков для дескрипторов BitFlag в наследниках
+        self._bits = set()
+
+        # Хук для вычисления признаков в классах-наследниках
+        self._calc_features()
+
+    def _calc_features(self):
+        """Переопределяется в наследниках для вычисления предметных признаков."""
+        pass
+
+    @property
+    def first(self):
+        """Первый токен фразы."""
+        return self.words[0] if self.words else None
+
+    @property
+    def last(self):
+        """Последний токен фразы."""
+        return self.words[-1] if self.words else None
+
+    @property
+    def prev(self):
+        """Токен, идущий строго перед фразой."""
+        return self.first.prev if self.first else None
+
+    @property
+    def next(self):
+        """Токен, идущий строго после фразы."""
+        return self.last.next if self.last else None
+
+    def find_lemma(self, lemmas):
+        """Ищет первый токен во фразе, лемма которого входит в указанный список/множество лемм.
+
+        Принимает: строку (одну лемму) или коллекцию лемм (set, list, tuple).
+        Возвращает: Объект Token или None.
+        """
+        lemmas = {lemmas} if isinstance(lemmas, str) else set(lemmas)
+        return next((w for w in self.words if w.lemma in lemmas), None)
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+    def __getitem__(self, key):
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            raise KeyError(key)
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}('{self.surface}')"
+
+class PhraseC(Phrase):
+    """Фраза-коннектор с набором бинарных синтаксических и пунктуационных признаков."""
+    # PhraseC - PhraseConnector - предназначен для системы распознавания коннекторов, 
+    # хранит не только коннекторы, но и отклонённые элементы и любые нужные фразы
 
     # Чтобы self._bits заполнился автоматически, мы должны здесь перечислить эти значения
     StartPosition = СтартоваяПозиция = BitFlag(0)
@@ -187,7 +253,6 @@ class Phrase:
 
     Structural = Структурынй = BitFlag(10)  # Структурные элементы: есть вводные слова или связующие элементы
 
-
     Complex  = Комплексный = BitFlag(11) # Комплексный паттерн, состоящий из нескольких слов
     ConnectiveInEachPart  = СвязующийВКаждойЧасти = BitFlag(12) # Все части сложного выражения содержат связующие элементы
 
@@ -202,9 +267,6 @@ class Phrase:
     ClosedPunctAfter = ЗакрывающаяПунктуацияПосле = BitFlag(24)
 
 
-
-
-
     Prev_A_I = Предшествует_А_И = BitFlag(30)
     Next_ZheComma = СледуетЖеЗапятая = BitFlag(31) # Сейчас этот признак не используется в правилах
 
@@ -213,8 +275,6 @@ class Phrase:
  
     LastHeadAfter = ПоследнегоГлавноеСправа = BitFlag(50) # Главное слово последнего токена фразы справа
 #    FirstHeadLeft = ПервогоГлавноеСлева = BitFlag(60) # Главное слово первого токена фразы слева
-
-
 
     # ПРИЗНАКИ С ПРАВИЛ, КОТОРЫЕ БОЛЬШЕ НЕ ИСПОЛЬЗУЮТСЯ
     LinkInEachPart = СвязьВКаждойЧасти = BitFlag(70) 
@@ -225,22 +285,43 @@ class Phrase:
     # ЕЩЁ ПРИЗНАКИ
     PhraseInSet = ФразаВУстойчивомВыражении = BitFlag(80) 
 
+    # ПРИЗНАКИ ДЛЯ СОЮЗОВ И СОЮЗНЫХ СЛОВ (выделены из rule_conj)
+    Next_By = СледующеетБы = BitFlag(81)  # Сразу после фразы идёт частица «бы» (например, «как бы», «что бы»)
+    HeadIsInf = ГлавноеИнфинитив = BitFlag(82)  # Синтаксическая вершина первого слова фразы — инфинитив (VerbForm=Inf, например «как закупать»)
+    CcompPerception = ИзъяснительноеВосприятия = BitFlag(83)  # Вершина фразы вводит изъяснительное придаточное (ccomp) при глаголе восприятия/мысли/речи («видели, как она летала»)
+    RelativeSubject = СоюзноеСловоПодлежащее = BitFlag(84)  # Первое слово фразы — относительное местоимение-подлежащее (PRON + nsubj, например присоединительное «..., что помогло...»)
+    CorrelativeBefore = КоррелятПеред = BitFlag(85)  # Слева перед запятой/фразой стоит соотносительное указательное слово («всё, что», «то/том, что», «тех, что»)
 
-    def __init__(self, parts, spans, pattern, engine):
-        self.engine = engine
-        self.parts = parts
-        self.spans = spans
-        self.pattern = pattern
-        self.surface = "...".join(" ".join(part) for part in pattern)
-        self.words = [word for part in parts for word in part]  #токены фразы
-        self.sent_tokens = self.words[0].tokens #токены предложения
-     
-        # Инициализируем хранилище битов (можно заменить на BitMap())
-        self._bits = set() 
-        
-        # 2. Запускаем вычисление признаков при создании объекта
-        self._calc_features()
 
+     # Признаки сочинительных союзов
+    FirstCconj = ПервоеСочинительныйСоюз = BitFlag(86)      # Первое слово фразы имеет часть речи CCONJ
+    FirstConjISignal = СигналСоюзаИ = BitFlag(87)            # Синтаксический сигнал союза «и»: deprel in {cc, fixed}
+    FirstConjIliSignal = СигналСоюзаИли = BitFlag(88)        # Синтаксический сигнал разделительного союза «или» / «либо»: deprel in {cc, discourse, fixed}
+
+
+    # Свойства синтаксической вершины (head) первого слова фразы
+    HeadIsInf = ГлавноеИнфинитив = BitFlag(90)      # Синтаксическая вершина — инфинитив (VerbForm=Inf)
+    HeadIsPart = ГлавноеПричастие = BitFlag(91)      # Синтаксическая вершина — причастие (VerbForm=Part, например «лучше организованы», «только испечён»)
+    HeadIsConv = ГлавноеДеепричастие = BitFlag(92)   # Синтаксическая вершина — деепричастие (VerbForm=Conv, например «фактически превратив»)
+    HeadIsAdj = ГлавноеПрилагательное = BitFlag(93)  # Синтаксическая вершина — прилагательное (upos == ADJ)
+
+    def print_debug(self, label: str = "PHRASE", verbose: bool = True) -> None:
+        """Выводит отладочную информацию о фразе и её морфосинтаксических признаках."""
+
+        self.verbose = verbose # устанавливаем флаг, который выведет дополнительную отадку. Если она не нужна, запустите .print_debug(verbose=False)
+        if not self.first:
+            print(f"DEBUG {label}: <пустая фраза> | sent={tokens2text(self.sent_tokens)}")
+            return
+
+        head_info = f"{self.first.head.s}({self.first.head.upos},{self.first.head.deprel})" if self.first.head else "None"
+        last_info = f", last={self.last.s!r}" if not self.Len1 and self.last else ""
+
+        print(
+            f"DEBUG {label}: surface={self.surface!r}, Len1={self.Len1}{last_info}, "
+            f"upos={self.first.upos}, deprel={self.first.deprel}, head={head_info}, "
+            f"init={self.SentenceInitial}, bits={sorted(self._bits)} | "
+            f"sent={tokens2text(self.sent_tokens)}"
+        )
 
     def _calc_features(self):
         """Вычисляет и устанавливает бинарные признаки для фразы."""
@@ -348,7 +429,51 @@ class Phrase:
             for w in part )
         
         # Фраза входит в устойчивое выражение
-        self.PhraseInSet = self._check_phrase_in_set()        
+        self.PhraseInSet = self._check_phrase_in_set()      
+
+        # ПРИЗНАКИ ДЛЯ СОЮЗОВ И СОЮЗНЫХ СЛОВ (из rule_conj)
+        # Следующий токен — частица «бы» («как бы», «что бы»)
+        self.Next_By = bool(self.next) and self.next.s == "бы"
+
+        # Вершина первого токена — инфинитив (характерно для вопросительных/инфинитивных оборотов: «как закупать», «что делать»)
+        self.HeadIsInf = bool(first) and bool(first.head) and "VerbForm=Inf" in first.head.feats
+
+        # Изъяснительное придаточное (ccomp) при глаголах восприятия, знания и речи («видели, как она летала»)
+        speech_perception_lemmas = {
+            "видеть", "увидеть", "слышать", "услышать", "знать", "узнать",
+            "понимать", "понять", "помнить", "вспомнить", "заметить",
+            "наблюдать", "смотреть", "показать", "рассказать", "описать",
+        }
+        first_head = first.head if first else None
+        head_parent = first_head.head if first_head else None
+        self.CcompPerception = (
+            bool(first_head)
+            and first_head.deprel == "ccomp"
+            and bool(head_parent)
+            and head_parent.lemma in speech_perception_lemmas
+        )
+
+        # Союзное слово в роли подлежащего (PRON + nsubj — характерно для присоединительного «..., что привело к...»)
+        self.RelativeSubject = bool(first) and first.upos == "PRON" and first.deprel == "nsubj"
+
+        # Наличие соотносительного слова (коррелята) слева перед знаками препинания («всё, что», «с тем, что», «тех, что»)
+        correlative_lemmas = {"всё", "все", "тот", "то", "такой", "один"}
+        prev_word = self.prev
+        while prev_word and prev_word.upos == "PUNCT":
+            prev_word = prev_word.prev
+        self.CorrelativeBefore = bool(prev_word) and prev_word.lemma in correlative_lemmas        
+
+         # Признаки сочинительных союзов (морфология и синтаксическая связь первого токена)
+        self.FirstCconj = bool(first) and first.upos == "CCONJ"
+        self.FirstConjISignal = bool(first) and first.deprel in {"cc", "fixed"}
+        self.FirstConjIliSignal = bool(first) and first.deprel in {"cc", "discourse", "fixed"}
+
+        first_head = first.head if first else None
+
+        self.HeadIsInf = bool(first_head) and "VerbForm=Inf" in first_head.feats
+        self.HeadIsPart = bool(first_head) and "VerbForm=Part" in first_head.feats
+        self.HeadIsConv = bool(first_head) and "VerbForm=Conv" in first_head.feats
+        self.HeadIsAdj = bool(first_head) and first_head.upos == "ADJ"
 
     def _check_phrase_in_set(self) -> bool:
         """Проверяет, входит ли хотя бы одно слово фразы в устойчивое выражение из engine.sets."""
@@ -373,50 +498,7 @@ class Phrase:
                         return True
 
         return False
-
-    @property
-    def first(self):
-        """Первый токен фразы."""
-        return self.words[0] if self.words else None
-
-    @property
-    def last(self):
-        """Последний токен фразы."""
-        return self.words[-1] if self.words else None
-
-    @property
-    def prev(self):
-        """Токен, идущий строго перед фразой."""
-        return self.first.prev if self.first else None
-
-    @property
-    def next(self):
-        """Токен, идущий строго после фразы."""
-        return self.last.next if self.last else None
     
-    def find_lemma(self, lemmas):
-        """Ищет первый токен во фразе, лемма которого входит в указанный список/множество лемм.
-        
-        Принимает: строку (одну лемму) или коллекцию лемм (set, list, tuple).
-        Возвращает: Объект Token или None.
-        """
-        lemmas = {lemmas} if isinstance(lemmas, str) else set(lemmas)
-        return next((w for w in self.words if w.lemma in lemmas), None)  
-
-    def get(self, key, default=None):
-        return getattr(self, key, default)
-
-    def __getitem__(self, key):
-        try:
-            return getattr(self, key)
-        except AttributeError:
-            raise KeyError(key)
-
-    def __repr__(self):
-        return f"Phrase('{self.surface}')"
-
-
-
 
 def rule_sentence_initial(phrase:Phrase):
     '''Фраза в начале предложения'''
@@ -513,7 +595,7 @@ def rule_pri_etom_dependent(phrase):
     if phrase.DependentAfter: 
         return -1
     
-    # есть главное справо справа от последнего и оно существительное или имя собственное
+    # есть главное справа от последнего и оно существительное или имя собственное
     last = phrase.last
     last_head = last.head if last and last.head else None
 
@@ -523,73 +605,45 @@ def rule_pri_etom_dependent(phrase):
     return +1
 
         
+def rule_phrase_in_list(phrase: PhraseC):
+    """Правило даёт +1 или +2 балла, если оборот в списке."""
 
-def rule_phrase_in_list(phrase):
-    """Правило даёт +1 балл, если оборот в списке. """
+    texts = tuple(word.s for word in phrase.words)
 
-    # Это немного "читтерское" правило. Оно даёт оборотам +1 балл (0.2) что позволяет таким оборотам "сработать" при одном сработавшем обычном правиле
-    # Смысл тут в том, что некоторые обороты являются всегда коннекторами
-
-
-    texts = tuple(word.s for word in phrase.words)  # tuple, не list
-
-    #AS2 добавляем "однако" и другие
+    # Блок +1 балл (+0.2 к вероятности)
     triggers = """
-    поэтому
-    вследствие чего
-    после чего
-    однако
-    фактически
-    например
-    тогда же
-    сразу же
-    именно
-    в противном случае
-    благодаря
-    в это же время
-    как будто
-    едва
-    потом
-    всё чаще
-    в том числе, в том числе и
-    впредь
-    в дальнейшем
-    интересно
-    же
-    в тот же
-    тогда как
-    и потому
-    в результате # перенесено из "при этом"
-#    наряду с  # надо разбираться со случаями употребления
+    поэтому, вследствие чего, и потому                                  # следствие
+    однако, тогда как                                                   # противопоставление
+    после чего, потом, впредь, в дальнейшем                             # последовательность и время
+    тогда же, сразу же, в это же время, в тот же                        # одновременность
+    например, в том числе, в том числе и, наряду с                      # иллюстрация, включение, сопоставление
+    фактически, в результате                                            # итог, реальное положение дел
+    именно, тем более                                                   # выделение, акцентирование
+    в противном случае, благодаря                                       # условие, причина
+    как будто, едва, интересно, же, всё чаще, заодно и                  # модальность, оценка, частицы
     """
-
-
 
     if in_triggers(texts, triggers):
         return 1
-    
-    #AS2 новый блок +2
+
+    # Блок +2 балла (+0.4 к вероятности)
     triggers = """
-    даже
-    также
-    затем
-    с целью
-    на сей раз
-    вот # см. books446
+    даже, также, заодно и, всё же        # присоединение, усиление, уступка
+    затем                                # последовательность
+    с целью                              # цель
+    на сей раз, вот                      # указание, ситуация
     """
     if in_triggers(texts, triggers):
         return 2
-    
 
-    #AS Эти слова штрафуем -1
+    # Штраф -1
     triggers = """
     будто
     """
     if in_triggers(texts, triggers):
         return -1
 
-
-    #AS Эти слова штрафуем -2
+    # Штраф -2
     triggers = """
     что
     """
@@ -598,43 +652,12 @@ def rule_phrase_in_list(phrase):
 
     return 0
 
-
-
-def rule_conjunction_i(phrase:Phrase):
-    """Отдельный союз «и, или, либо» → сильный бонус; иначе 0."""
-    
-    def not_upper(token):
-        return bool(token) and token.text.upper()!=token.text
-    
-    word = phrase.first
-    if not phrase.Len1 or not word.lemma in {"и", "или", "либо"}:
-        return 0
-
-    if "Шуйского" in tokens2text(phrase.sent_tokens):
-        pass
-
-    conj_signal = word.upos == "CCONJ" or word.deprel in {"cc", "discourse", "fixed"}
-
-    #Корректируем ошибку Stanza отнесения И (инициал) к предлогу. Пример books14
-    if conj_signal and word.text=="И" and word.id>1: # капслок и не начало фразы
-        #убедимся, что у нас не всё предложение капслоком. Проверим два слоа до и два слова после
-        if (
-            word.prev and (not_upper(word.prev) or not_upper(word.prev.prev)) or
-            word.next and (not_upper(word.next) or not_upper(word.prev.next))
-            ): return 0
-    
-
-    # типичные признаки сочинительного союза у Stanza
-    if conj_signal:
-        return +2  # сдвиг p на 2/n (при n=5 → +0.4)core_entity
-    return 0
-
-
-def rule_special(phrase:Phrase):
+def rule_special(phrase:PhraseC):
     """Специфические контекстные правила для коннекторов."""
-    if not phrase.words:
-        return 0
+
     first = phrase.first
+    if not first:
+        return 0    
 
     if phrase.PhraseInSet:
         return -3
@@ -643,7 +666,6 @@ def rule_special(phrase:Phrase):
     # Правило на одиночную "же"
     if phrase.Len1 and first.s=="же":
         prev = first.prev
-
 
         if prev:
 
@@ -655,13 +677,46 @@ def rule_special(phrase:Phrase):
                 if first.id <= 4:
                     return +2
 
-
             if prev.prev and prev.prev.text in [":", "—", ";", ","]:
                 if prev.upos in {"NOUN", "PRON", "PROPN", "DET"}:
                     return +2
 
             return 0
+        
+    if not phrase.SentenceInitial and phrase.surface == "оказалось что":
+        if phrase.first.deprel not in {"parataxis", "discourse"}:
+            return -1    
 
+    # Предложный оборот «в связи с этим» в середине предложения без обособления слева
+    # («Историк Ключевский писал в связи с этим, что...» — пример 38) выступает как дополнение при глаголе.
+    if phrase.surface == "в связи с этим":
+        if not phrase.SentenceInitial and not phrase.PunctBefore and not phrase.BspSignalBefore:
+            return -2
+        
+    
+
+    # Вводное «как правило» в начале предложения должно закрываться запятой («Как правило, ...» vs first 92)
+    if phrase.surface == "как правило":
+        if phrase.SentenceInitial and not phrase.ClosedPunctAfter:
+            return -2
+
+        
+    # Вводное слово «Правда, ...» требует наличия полноценной предикативной основы (глагола) в предложении;
+    # в назывных конструкциях без глагола («Правда, только правда и ничего кроме правды» — first 13) это не коннектор.
+    if phrase.surface == "правда" and phrase.SentenceInitial:
+#        phrase.print_debug()
+        has_verb = any(t.upos in {"VERB", "AUX"} for t in phrase.sent_tokens)
+        if not has_verb:
+            return -3
+                
+    # Предикатив-сказуемое главного предложения «Видно, что...» (first 24)
+    # В отличие от вводного слова «Видно, ...» (deprel in {parataxis, discourse}),
+    # здесь «видно» является вершиной всего предложения (deprel == "root").
+    if phrase.surface == "видно":
+#        phrase.print_debug()
+        if phrase.first.deprel == "root":
+            return -3
+                        
     return 0
 
 def rule_time_connector(phrase:Phrase):
@@ -715,6 +770,185 @@ def rule_time_connector(phrase:Phrase):
   
     return 0
 
+
+def rule_complex(phrase: PhraseC) -> int:
+    """Контекстное правило для составных (разрывных) коннекторов."""
+    
+    if not phrase.Complex:
+        return 0
+
+    first = phrase.first
+    last = phrase.last
+    if not first or not last:
+        return 0
+
+    # 1. Ложные разрывные паттерны вроде «что...что», «что...то», «что...если»,
+    # когда первое «что» — обычный изъяснительный союз (примеры 24, 61, 81, 278, 441).
+    if first.s == "что" and first.upos == "SCONJ":
+        return -3
+
+    # 2. Случайные склейки союза «и» с частицей «только» или наречием «так»
+    # через полпредложения (примеры 99, 206, 307, 309).
+    if phrase.surface in {"и...только", "и...так"}:
+        return -3
+
+    # 3. Защита союза «то есть» (пример 382):
+    # если начало или конец разрывного паттерна попадает на слово «то» внутри союза «то есть».
+    if (last.s == "то" and last.next and last.next.s == "есть") or (
+        first.s == "то" and first.next and first.next.s == "есть"
+    ):
+        return -3
+
+    # 4. Наречие «так» в конструкции «так, чтобы» / «так, что» не должно становиться частью
+    # разрывного коннектора (пример 485: «Если ... изображать фигуры так, чтобы ..., то ...»).
+    for part in phrase.parts:
+        if len(part) == 1 and part[0].s == "так":
+            next_word = part[0].next
+            while next_word and next_word.upos == "PUNCT":
+                next_word = next_word.next
+            if next_word and next_word.s in {"чтобы", "что"}:
+                return -3
+
+    # 5. Ложные парные склейки с ограничительной частицей «только» (без «не» перед ней)
+    # или со сравнительной степенью наречия («чем...лучше» — примеры 38, 205).
+    if phrase.surface == "только...а":
+        if not (first.prev and first.prev.s == "не"):
+            return -3
+
+    if phrase.surface == "чем...лучше":
+        return -3
+   
+    
+    return 0
+
+
+def rule_conj(phrase: Phrase) -> int:
+    """Контекстное правило для одиночных союзов/союзных слов («как», «что»)."""
+    def not_upper(token) -> bool:
+        return bool(token) and token.text.upper() != token.text
+
+
+    if not phrase.Len1:
+        return 0
+
+    word = phrase.first
+    if not word:
+        return 0
+
+    if word.s == "что":
+        # Присоединительное придаточное после запятой: «что» выступает как относительное
+        # местоимение-подлежащее (RelativeSubject) и не опирается на коррелят слева
+        # вроде «всё, что», «с тем, что», «тех, что» (примеры 16, 103, 145 vs 170, 357, 424).
+        if phrase.PunctBefore and phrase.RelativeSubject and not phrase.CorrelativeBefore:
+            return +4
+
+        # Изъяснительный союз «что» (SCONJ) или местоимение при корреляте
+        return 0
+
+    if word.s == "как":
+
+
+        # Вопросительное наречие в начале вопросительного предложения («Как правило рождает исключение?» — first 92)
+        sent_ends_with_question = bool(phrase.sent_tokens) and phrase.sent_tokens[-1].text == "?"
+        if phrase.SentenceInitial and sent_ends_with_question:
+            return -3
+        
+        # Сочетание «как бы» — не одиночный линкер (пример 319)
+        if phrase.Next_By:
+            return -3
+
+        # Перечисления после двоеточия или инфинитивные вопросы («советы: как закупать...» — пример 482)
+        if phrase.HeadIsInf or (phrase.BspSignalBefore and word.upos == "ADV"):
+            return -2
+
+        # Изъяснительное «как» после глаголов восприятия/знания («видели, как она летала» — пример 359)
+        if phrase.CcompPerception:
+            return -2
+
+        # Обособленный сравнительный или пояснительный оборот после запятой
+        # («не на восемь, как в Италии», «таких, как...» — примеры 239, 241, 369)
+        if (
+            phrase.PunctBefore
+            and not phrase.BspSignalBefore
+            and not phrase.HeadIsInf
+            and not phrase.CcompPerception
+        ):
+            return +1
+
+        # Необособленное «как» в значении «в качестве» («как личность», «известен как...» — примеры 5, 112, 160)
+        if not phrase.PunctBefore and not phrase.SentenceInitial:
+            return -1
+
+    if word.s == "и":
+        if not (phrase.FirstCconj or phrase.FirstConjISignal):
+            return 0
+
+        # Корректируем ошибку Stanza отнесения заглавной «И» (инициала имени) к союзу (пример books14)
+        if word.text == "И" and word.id > 1:
+            if (
+                word.prev and (not_upper(word.prev) or not_upper(word.prev.prev))
+                or word.next and (not_upper(word.next) or (word.prev and not_upper(word.prev.next)))
+            ):
+                return 0
+
+        # Внутриименная связка «эти и другие», «те и другие», «такие и другие» (пример 189)
+        if (
+            word.prev
+            and word.prev.lemma in {"этот", "тот", "такой"}
+            and word.next
+            and word.next.lemma == "другой"
+        ):
+            return 0
+
+        return +2
+
+    if word.s in {"или", "либо"}:
+        if phrase.FirstCconj or phrase.FirstConjIliSignal:
+            return +2
+
+        
+    return 0
+
+
+def rule_adverb(phrase: PhraseC) -> int:
+    """Точечное правило для наречий образа действия при деепричастиях и полных причастиях."""
+    if not phrase.Len1:
+        return 0
+    
+    word = phrase.first
+    if not word or word.upos != "ADV":
+        return 0
+
+    # Исключаем временные и дискурсивные наречия-коннекторы, которые могут стоять перед сказуемым/деепричастием
+    time_and_discourse_adverbs = {
+        "затем", "тогда", "теперь", "потом", "впоследствии", "впредь",
+        "далее", "едва", "однако", "впрочем", "также", "притом", "причём",
+    }
+    if word.lemma in time_and_discourse_adverbs:
+        return 0
+
+    # Если наречие обособлено запятыми как вводное — не трогаем
+    if (phrase.PunctBefore or phrase.SentenceInitial) and phrase.ClosedPunctAfter:
+        return 0
+
+    head = word.head
+    if not head:
+        return 0
+
+    # 1. Наречие при деепричастии («фактически превратив Францию» — пример 125)
+    # или при полном причастии (исключаем краткие причастия Variant=Short, которые служат сказуемым)
+    is_full_participle = phrase.HeadIsPart and "Variant=Short" not in head.feats
+    if phrase.HeadIsConv or is_full_participle:
+        return -2
+
+    # 2. Сравнительная степень наречия («лучше», «больше», «чаще») при не-глагольном сказуемом
+    if "Degree=Cmp" in word.feats and not phrase.SentenceInitial:
+        return -2
+
+    return 0
+
+
+
 class EngineChecker(Engine):
     def __init__(
         self,
@@ -740,7 +974,7 @@ class EngineChecker(Engine):
 
 
     #AS Экстра правила
-    def score_entity(self, phrase, debug: bool = False) -> float:
+    def score_entity(self, phrase:PhraseC, debug: bool = False) -> float:
         """entity: {"surface": ..., "parts": {part1: [...], ...}}"""
         n = len(self.rules)
         votes = []
@@ -761,7 +995,7 @@ class EngineChecker(Engine):
 
         p = max(0.0, min(1.0, p))
 
-        if debug:
+        if debug or phrase.verbose:
             print(f"  surface={phrase.surface!r}  p={p:.3f}")
             for name, v in votes:
                 print(f"    {name}: {v:+d}")
@@ -789,7 +1023,7 @@ def build_engine(linkers_csv: str = None, nlp=None, threshold: float = None) -> 
 
 
 
-#Дананя функция вызывается из Gradio её интерфейс сохранён для совместимости
+#Данная функция вызывается из Gradio её интерфейс сохранён для совместимости
 def build_default_checker(
     nlp: object = None,
     patterns_by_type: dict = None,
@@ -804,19 +1038,19 @@ def build_default_checker(
     )
 
     
-    checker.add_rule(rule_sentence_initial) #+1 если оборот в начале предложения
-    checker.add_rule(rule_punct_before) #+1 если пунктуация перед любой частью оборота
-    checker.add_rule(rule_dependency_signal) #+1 если есть маркеры "parataxis", "discourse", "cc", "mark", "fixed"
-    checker.add_rule(rule_no_space_after) #+1 если пунктуация после оборота, внутри оборота или оборот в конце текста
+    checker.add_rule(rule_sentence_initial)         # +1 если оборот в начале предложения
+    checker.add_rule(rule_punct_before)             # +1 если пунктуация перед любой частью оборота
+    checker.add_rule(rule_dependency_signal)        # +1 если есть маркеры "parataxis", "discourse", "cc", "mark", "fixed"
+    checker.add_rule(rule_no_space_after)           # +1 если пунктуация после оборота, внутри оборота или оборот в конце текста
+    checker.add_rule(rule_introductory_potential)   # +1 если "а", "и" перед оборотом
 
-    checker.add_rule(rule_introductory_potential) # "а", "и" перед оборотом
-
-
-    checker.add_extra_rule(rule_pri_etom_dependent)  # AS Добавляем экстра-правило. Также см комментарий к функции rule_pri_etom_dependent
-    checker.add_extra_rule(rule_conjunction_i)# AS Добавляем экстра-правило для и
-    checker.add_extra_rule(rule_phrase_in_list)# AS Добавляем правило, усиливающее оценку конкретных оборотов на +1 (0.2)
-    checker.add_extra_rule(rule_special)
-    checker.add_extra_rule(rule_time_connector)     
+    checker.add_extra_rule(rule_pri_etom_dependent) # экстра-правило по типу фразы "при этом". См. комментарий к функции rule_pri_etom_dependent
+    checker.add_extra_rule(rule_phrase_in_list)     # правило, усиливающее оценку конкретных оборотов 
+    checker.add_extra_rule(rule_special)            # правило, работающее с разными коннекторами
+    checker.add_extra_rule(rule_time_connector)     # правило для коннекторов времени
+    checker.add_extra_rule(rule_conj)               # союзы "что, как, и, или" и другие
+    checker.add_extra_rule(rule_complex)            # cложные (из разных частей) паттерны
+    checker.add_extra_rule(rule_adverb)             # наречия
 
     return checker
 
