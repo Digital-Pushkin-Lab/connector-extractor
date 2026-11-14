@@ -11,10 +11,13 @@ from typing import List, Optional, Sequence, Tuple
 from collections import defaultdict
 #from bisect import bisect_left
 
-from rules import Token
+from rules import Token, PhraseC
 
 Part = Tuple[str, ...]
 Pattern = Tuple[Part, ...]
+
+
+
 
 _cached_pattern_index = None
 
@@ -44,10 +47,6 @@ def build_pattern_index(patterns):
 
     return pattern_index
 
-
-
-def pattern_surface(pattern: Pattern) -> str:
-    return "...".join(" ".join(part) for part in pattern)
 
 
 def match_part(tokens, start: int, part: Part) -> Optional[int]:
@@ -110,11 +109,9 @@ def match_pattern(tokens, start: int, pattern: Pattern) -> Optional[List[Tuple[i
     return spans
 
 
-def extract_entities_from_sentence(tokens_stanza, patterns: Sequence[Pattern], debug = False) -> List[dict]:
-    """Greedily find non-overlapping pattern matches in a sentence's tokens,
-    longest (most parts, then most words) first."""
 
-    # Создаём список наших токенов, далее работаем с ними в том числе и в правилах
+def extract_entities_from_sentence(engine, tokens_stanza, patterns: Sequence[Pattern], debug = False) -> List[dict]:
+    """Находит все вхождения паттернов из словаря в предложении (включая вложенные)."""
     tokens = []
     for token_stanza in tokens_stanza:
         tokens.append(Token(token_stanza, tokens))
@@ -123,17 +120,10 @@ def extract_entities_from_sentence(tokens_stanza, patterns: Sequence[Pattern], d
     if debug:
         pass
 
-    used = [False] * len(tokens)
     results = []
-
-
-    #функция готовит паттерны один раз, и не на предложение, а вообще, так как внутри используется кэш
-    pattern_index = build_pattern_index(patterns) 
+    pattern_index = build_pattern_index(patterns)
 
     for i in range(len(tokens)):
-        if used[i]:
-            continue
-
         first_word = tokens[i].s
         candidates = pattern_index.get(first_word, ())
 
@@ -144,30 +134,21 @@ def extract_entities_from_sentence(tokens_stanza, patterns: Sequence[Pattern], d
                 pass
 
             spans = match_pattern(tokens, i, pattern)
+
             if spans:
-                parts_json = {}
-                char_spans = []
-                for idx, (s, e) in enumerate(spans, start=1):
-                    
-                    part_tokens = tokens[s:e]
-
-                    parts_json[f"part{idx}"] = part_tokens
-                    char_spans.append((part_tokens[0]["start_char"], part_tokens[-1]["end_char"]))
-                    for k in range(s, e):
-                        used[k] = True
-
-                results.append({
-                    "surface": pattern_surface(pattern),
-                    "parts": parts_json,
-                    "spans": char_spans,
-                })
-                break
+                parts = [tokens[s:e] for s, e in spans]
+                char_spans = [(part[0]["start_char"], part[-1]["end_char"]) for part in parts]
+                results.append(PhraseC(parts, char_spans, pattern, engine))
 
     return results
 
 
-def sentence_to_json(sentence: str, tokens, patterns: Sequence[Pattern], debug = False) -> dict:
-    return {
-        "sentence": sentence,
-        "entities": extract_entities_from_sentence(tokens, patterns, debug),
-    }
+
+
+
+
+#временно
+def pattern_surface(pattern: Pattern) -> str:
+    return "...".join(" ".join(part) for part in pattern)
+
+

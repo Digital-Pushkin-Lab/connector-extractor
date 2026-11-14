@@ -23,10 +23,10 @@ from tqdm.auto import tqdm
 
 from razdel import sentenize
 
-from matching import Pattern, sentence_to_json
-from patterns import build_patterns_from_csv
+from patterns import build_patterns_from_csv, expand_expressions
 
-
+from collections import defaultdict #для сортирвоки
+import csv
 
 DEFAULT_THRESHOLD = 0.4
 
@@ -59,18 +59,90 @@ def load_patterns(linkers_csv: str = None) -> dict:
 class Engine:
     """Stanza, scorer, паттерны и кэш разбора предложений."""
 
-    nlp: object
-    checker: object
-    patterns_by_type: dict
+    # nlp: object
+    # checker: object
+    # patterns_by_type: dict
+    # threshold: float = DEFAULT_THRESHOLD
 
-    # Текст предложения razdel -> результат Stanza.
-    # Кэш отдельный для каждого экземпляра Engine.
-    _sentence_cache: Dict[str, object] = field(
-        default_factory=dict,
-        init=False,
-        repr=False,
-        compare=False,
-    )
+    # # Кэш разметки Stanza
+    # _sentence_cache: Dict[str, object] = field(
+    #     default_factory=dict,
+    #     init=False,
+    #     repr=False,
+    #     compare=False,
+    # )
+    def __init__(
+        self,
+        nlp: object = None,
+        patterns_by_type: dict = {},
+        threshold=DEFAULT_THRESHOLD,        
+    ) -> None:
+        self.nlp = self.build_nlp(nlp)
+        self.patterns_by_type = (
+            patterns_by_type
+            if patterns_by_type is not None
+            else load_patterns()
+        )
+        self.threshold = threshold if threshold is not None else DEFAULT_THRESHOLD
+
+
+        # Список устойчивых выражений (каждое выражение — кортеж токенов в нижнем регистре)
+        self.sets: List[Tuple[str, ...]] = []
+        # Кэш-индекс по словам: слово -> список (выражение, позиция_слова_в_выражении)
+        self.sets_by_word: Dict[str, List[Tuple[Tuple[str, ...], int]]] = defaultdict(list)
+
+
+        # Кэш разметки Stanza
+        self._sentence_cache: Dict[str, object] = {}
+
+        self.load_sets()
+        pass
+
+    def build_nlp(self, nlp=None):
+        """Construct the stanza pipeline. Downloads the stanza `ru` model on
+        first use if it is missing. Pass `nlp` to reuse an existing pipeline."""
+        if nlp is None:
+            import stanza
+            processors = "tokenize,pos,lemma,depparse"
+            try:
+                nlp = stanza.Pipeline("ru", processors=processors,
+                                      download_method=None, logging_level="ERROR")
+            except Exception:
+                stanza.download("ru")
+                nlp = stanza.Pipeline("ru", processors=processors,
+                                      logging_level="ERROR")
+        return nlp
+
+    def load_sets(self, file_name: str = None) -> None:
+        """Загрузить устойчивые выражения из TSV-файла и проиндексировать по словам.
+
+        Берётся первая колонка файла. Строки, начинающиеся с `#`,
+        считаются комментариями и пропускаются.
+        """
+        if file_name is None:
+            file_name = str(DATA_DIR / "sets.tsv")
+
+        self.sets = []
+        self.sets_by_word = defaultdict(list)
+
+        path = Path(file_name)
+        if not path.exists():
+            return
+
+        with open(path, "r", encoding="utf-8") as file:
+            reader = csv.reader(file, delimiter="\t")
+
+            for row in reader:
+                if not row:
+                    continue
+
+                # expand_expressions - функция из модуля patterns, "разворачивает" выражение
+                for expr in expand_expressions(row[0]):  
+
+                    tokens = tuple(expr.split())
+                    self.sets.append(tokens)
+                    for idx, word in enumerate(tokens):
+                        self.sets_by_word[word].append((tokens, idx))
 
     def preparse_texts(
         self,
@@ -173,19 +245,13 @@ class Engine:
                 sentence_text = sub.text
 
                 if sentence_text not in self._sentence_cache:
-                    # Обычный одиночный вызов остаётся рабочим,
-                    # даже если preparse_texts не вызывался.
-                    self._sentence_cache[sentence_text] = self.nlp(
-                        sentence_text
-                    )
+                    # Обычный вызов остаётся доступен, даже если preparse_texts не вызывался.
+                    self._sentence_cache[sentence_text] = self.nlp(sentence_text)
 
                 parsed = self._sentence_cache[sentence_text]
 
                 if parsed.sentences:
-                    parts = [
-                        doc_sentence.tokens
-                        for doc_sentence in parsed.sentences
-                    ]
+                    parts = [doc_sentence.tokens for doc_sentence in parsed.sentences]
 
                     n_words = sum(
                         1
@@ -210,10 +276,144 @@ class Engine:
                 paragraph += 1
 
         return parsed_sentences, word_count
+    
+    # функция перенесена из matching.py
+    def sentence_to_json(self, sentence: str, tokens, patterns=None, debug: bool = False) -> dict:
+        from matching import extract_entities_from_sentence
+
+        if patterns is None:
+            patterns = self.patterns_by_type.get("linker", ())
+
+        return {
+            "sentence": sentence,
+            "entities": extract_entities_from_sentence(self, tokens, patterns, debug),
+        }
 
     def clear_parse_cache(self) -> None:
         """Освободить результаты разбора."""
         self._sentence_cache.clear()
+
+    # фцнкция возвращает размеченную скобками [] текстовую строку и список найденных паттернов. Перенесена из markup.py
+    def mark_text(self, text: str) -> Tuple[str, List[dict]]:
+        """
+        Размечает предложение и возвращает кортеж:
+        - размеченное предложение
+        - список найденных паттернов
+
+        В список паттернов входят как принятые, так и отклонённые span'ы.
+        """
+        if not text or not text.strip():
+            return text, []
+
+        parsed_sentences, _ = self.parse_sentences(text)
+
+        spans = extract_spans(
+            parsed_sentences,
+            self,
+            self.patterns_by_type,
+            return_rejected=True
+        )
+
+        spans = dedupe_spans(spans)
+
+
+        patterns = []
+
+        # принятые паттерны
+        seen_composite = set()
+
+        for sp in spans:
+            surface = sp["surface"]
+            pattern_type = sp["type"]
+
+            if "..." in surface:
+                key = (surface, pattern_type)
+
+                # составной паттерн добавляем только один раз
+                if key in seen_composite:
+                    continue
+
+                seen_composite.add(key)
+
+            patterns.append({
+                "surface": surface,
+                "type": pattern_type if not sp["is_rejected"] else "other",
+                "start": sp["start"],
+                "end": sp["end"],
+                "accepted": not sp["is_rejected"],
+
+            })
+
+
+
+        # сортируем паттерны по их позиции в исходном тексте
+        patterns.sort(key=lambda p: (p["start"], p["end"]))
+
+        if not spans :
+            return text, patterns, []
+
+        events = []
+
+        # Разделяем на обычные и составные (по наличию "..." в surface)
+        continuous = []
+        groups = defaultdict(list)
+
+        for sp in spans:
+            if not sp["is_rejected"]:
+                if "..." in sp["surface"]:
+                    key = (sp["surface"], sp["type"])
+                    groups[key].append(sp)
+                else:
+                    continuous.append(sp)
+
+        # 1. Обычные (односоставные) — всегда без нуля
+        for sp in continuous:
+            cat = sp["type"]
+            events.append((sp["start"], True, sp["end"], cat))
+            events.append((sp["end"], False, sp["start"], cat))
+
+        # 2. Составные — части нумеруются с 1
+        for key, group in groups.items():
+            group_sorted = sorted(group, key=lambda x: x["start"])
+
+            for i, sp in enumerate(group_sorted):
+                cat = f"{sp['type']}{i + 1}"
+                events.append((sp["start"], True, sp["end"], cat))
+                events.append((sp["end"], False, sp["start"], cat))
+
+        # 3. Отклонённые
+        for sp in spans:
+            if sp["is_rejected"]:
+                events.append((sp["start"], True, sp["end"], "other"))
+                events.append((sp["end"], False, sp["start"], "other"))
+        # Сортировка событий
+        events.sort(
+            key=lambda ev: (ev[0], 0 if not ev[1] else 1, -ev[2])
+        )
+
+        # Сборка размеченного текста
+        parts = []
+        pos = 0
+
+        for idx, is_open, other, cat in events:
+            parts.append(text[pos:idx])
+
+            if is_open:
+                parts.append("[")
+            else:
+                parts.append(f"]={cat}")
+
+            pos = idx
+
+        parts.append(text[pos:])
+        marked_line = "".join(parts)
+
+
+
+
+        return marked_line, patterns, spans
+
+
 
 
 # Данная функция осталась здесь временно для совместимости как функция-заглушка. 
@@ -223,34 +423,12 @@ def parse_sentences(text: str, nlp) -> Tuple[List[tuple], int]:
     print("Вызвана устаревшая функция-обёртка parse_sentences(text: str, nlp). Требуется переписать через engine.parse_sentences(text) !!!")
 
     # создаём упрощённый Engine без чекера и паттернов, только Stanza
-    engine = Engine(nlp=nlp, checker=None, patterns_by_type=None)
+    engine = Engine(nlp=nlp)    
 
     # вызываем функцию из engine
     return engine.parse_sentences(text)
 
 
-
-def build_engine(linkers_csv: str = None, nlp=None) -> Engine:
-    """Construct the extractor engine. Downloads the stanza `ru` model on
-    first use if it is missing. Pass `nlp` to reuse an existing pipeline."""
-    from rules import build_default_checker
-
-    if nlp is None:
-        import stanza
-        processors = "tokenize,pos,lemma,depparse"
-        try:
-            nlp = stanza.Pipeline("ru", processors=processors,
-                                  download_method=None, logging_level="ERROR")
-        except Exception:
-            stanza.download("ru")
-            nlp = stanza.Pipeline("ru", processors=processors,
-                                  logging_level="ERROR")
-
-    return Engine(
-        nlp=nlp,
-        checker=build_default_checker(),
-        patterns_by_type=load_patterns(linkers_csv),
-    )
 
 
 def round_half_up(value: float, ndigits: int = 1) -> float:
@@ -264,22 +442,24 @@ def round_half_up(value: float, ndigits: int = 1) -> float:
     rounded_decimal = decimal_value.quantize(quantize_exp, rounding=ROUND_HALF_UP)
     return float(rounded_decimal)
 
-
+#вызывается из extract.py
 def analyze_parsed(parsed_sentences: List[tuple], checker, patterns: Sequence[Pattern]) -> List[list]:
     """Run one match+score pass of `patterns` over sentences already parsed
     by `parse_sentences`. Returns one result list per razdel sentence, with
     the matches from all of its stanza parts pooled together."""
+
     sentence_results = []
     for sentence_text, parts, *_ in parsed_sentences:
         scored = []
         for tokens in parts:
-            sentence_json = sentence_to_json(sentence_text, tokens, patterns)
-            scored.extend(checker.score_sentence(sentence_json, tokens))
+            sentence_json = checker.sentence_to_json(sentence_text, tokens, patterns)
+            scored.extend(checker.score_sentence(sentence_json))
         sentence_results.append(scored)
     return sentence_results
 
 
-
+# эту функцию вызывает напрямую фронтенд Градио
+# её же вызывает Engine.mark_text() - это мы сделали сознательно для максимального использования этого фрагмента
 def extract_spans(
     parsed_sentences: List[tuple],
     checker,
@@ -289,25 +469,24 @@ def extract_spans(
     debug: bool = False,                    # новый параметр
 ) -> List[dict] | tuple[List[dict], List[dict]]:
     results = []
-    rejected = []
 
 
     for sentence_text, parts, sentence_start, *_ in parsed_sentences:
 
-        # # для отладки
-        # if "Вот тут" in sentence_text:
-        #     debug=True    # 'этот параметр инициирует детальный вывод 
+        # для отладки make_debug
+        # if "Годунову донесли," in sentence_text:
+        #     debug =True    # 'этот параметр инициирует детальный вывод 
         #     pass
 
         # Все части одного razdel-предложения (если stanza разбила его
         # дальше) обрабатываются по отдельности; смещения токенов у всех
         # частей отсчитываются от начала razdel-предложения.
-        for tokens in parts:
+        for part_tokens in parts:
 
             for type_name, patterns in patterns_by_type.items():
-                sentence_json = sentence_to_json(sentence_text, tokens, patterns, debug)
-                scored = checker.score_sentence(sentence_json, tokens, debug=debug)
-                for entity, score in zip(sentence_json["entities"], scored):
+                sentence_json = checker.sentence_to_json(sentence_text, part_tokens, patterns, debug)
+                phrases = checker.score_sentence(sentence_json, debug=debug)
+                for phrase in phrases:
                     # Общий group_id для всех частей одного (возможно, разрывного)
                     # коннектора -- чтобы, например, "если" и "то" из "если...то"
                     # получили один и тот же id при отображении в gradio_app.
@@ -315,68 +494,174 @@ def extract_spans(
                     item = {
                         "start": None,          # заполним ниже
                         "end": None,
-                        "surface": entity["surface"],
+                        "surface": phrase.surface,
                         "type": type_name,
-                        "probability": score["probability"],
+                        "probability": phrase.probability,
                         "group_id": group_id,
+                        "is_rejected": phrase.probability < threshold, # добавили указание на отвергнутость
+                        "phrase": phrase, # добавим сюда нашу фразу-первоисточник
                     }
 
-                    for s, e in entity["spans"]:
+                    # for s, e in phrase.spans:
+                    #     span_item = item.copy()
+                    #     span_item["start"] = sentence_start + s
+                    #     span_item["end"] = sentence_start + e
+
+                    #     if not span_item["is_rejected"] or return_rejected:
+                    #         results.append(span_item)
+                    for s, e in phrase.spans:
                         span_item = item.copy()
                         span_item["start"] = sentence_start + s
                         span_item["end"] = sentence_start + e
+                        span_item["text"] = sentence_text[s:e]
+                        span_item["label"] = span_item["type"] if not span_item["is_rejected"] else "other"
 
-                        if score["probability"] < threshold:
-                            rejected.append(span_item)
-                        else:
-                            results.append(span_item)
+                        if not span_item["is_rejected"] or return_rejected:
+                            results.append(span_item)                    
 
-    if return_rejected:
-        return results, rejected
+    # # добавляем эти поля в словарь, они нужны нам в evaluate.py для сравнения
+    # for sp in results:
+    #     sp["text"] = sentence_text[sp["start"]:sp["end"]]
+    #     sp["label"] = sp["type"] if not sp["is_rejected"] else "other"
+
     return results
 
 
 def dedupe_spans(spans: List[dict]) -> List[dict]:
-    """Collapse exact-duplicate (start, end) matches, keeping whichever has
-    the higher scored probability. Order of first appearance is preserved.
-    With a single pattern list this is a safety net rather than a necessity."""
-    best: dict = {}
-    order: List[Tuple[int, int]] = []
-    for sp in spans:
-        pos = (sp["start"], sp["end"])
-        if pos not in best:
-            best[pos] = sp
-            order.append(pos)
-        elif sp["probability"] > best[pos]["probability"]:
-            best[pos] = sp
-    return [best[pos] for pos in order]
+    """Удаляет дубликаты и разрешает конфликты пересекающихся спанов."""
+
+    # Исходно в систему попадают и анализируются все паттерны, даже пересекающиеся, а затем мы проводим дедупликацию
+
+    # Термины: "принятые" - имеющие сожержательную метку. "Отклонённые" - кандидаты, которые не получили сожержательную метку (получили =other)
+    # Дедупликация осуществляется в этой функцуии и разбита на два последовательных прохода:
+    # 1. Сначала разрешаем конфликты только между принятыми спанами (not sp["is_rejected"]). 
+    # 2. Затем оставшиеся принятые спаны очищают вложенные в них отклонённые 
+    # (и отменяют длинные отклонённые, если сами оказались внутри них). Таким образом, у нас останется 
+    # самый сложный из принятых паттернов, а затем отклонённые, даже если они исходно пересекались с принятыми, 
+    # но потом удалёнными из-за другиз принятых. Пример "Если же ты придёшь, то я буду рад."
+    # Тут три паттерна "если..то", "если же", "же" Если будет приянто два: "если..то" и "если же", а "же" отклонён, 
+    # то мы разрешим "спор" сначала между двумя принятыми и возьмём сложный "если...то", а затем у нас останется 
+    # отклонённый "же", который уже ни с кем не конфликтует, и мы его не удалим. 
+
+    # Этап 1 (точная дедупликация):
+    # - Схлопывает спаны с полностью совпадающими границами и surface, оставляя
+    #   вариант с наибольшей вероятностью.
+
+    # Этап 2 (разрешение конфликтов между принятыми спанами):
+    # - 2а. Сначала разрешаются конфликты только между принятыми составными паттернами
+    #   (например, 'Стоило...как' побеждает 'как...и', чтобы проигравший составной
+    #   паттерн удалился целиком по group_id и не успел поглотить одиночные союзы).
+    # - 2б. Затем выжившие принятые спаны разрешают вложения и частичные пересечения
+    #   с простыми принятыми спанами. Приоритет: число частей (составной побеждает
+    #   простой), более ранняя позиция начала (-start), длина спана, вероятность.
+
+    # Этап 3 (фильтрация отклонённых спанов):
+    # - 3а. Выжившие принятые спаны поглощают вложенные в них отклонённые спаны
+    #   и отменяют покрывающие их отклонённые спаны (например, принятый 'и' отменяет
+    #   отклонённый 'и таким образом', освобождая вложенный 'таким образом').
+    # - 3б. Среди оставшихся отклонённых спанов более длинные поглощают вложенные
+    #   короткие, чтобы не плодить двойные скобки (например, 'всё чаще' поглощает 'чаще').
+
+    # Этап 4 (финальная схлопка):
+    # - Удаляет оставшиеся совпадения на одинаковых границах (start, end) с учётом
+    #   приоритета: статус принятия, число частей, вероятность.
 
 
-def predict_spans(text: str,
-                  engine: "Engine",
-                  threshold: float = DEFAULT_THRESHOLD,
-                  with_rejected: bool = False):
-    """Run the full extractor on `text`: split + parse + match + score +
-    dedupe. Returns a list of span dicts
-    ({"start", "end", "surface", "type", "probability"}) with character
-    offsets absolute in `text`. With `with_rejected=True` returns
-    `(kept, rejected)`, where `rejected` holds sub-threshold near-misses."""
-    if not text or not text.strip():
-        return ([], []) if with_rejected else []
+    def parts(sp: dict) -> int:
+        pattern = getattr(sp.get("phrase"), "pattern", None)
+        return len(pattern) if pattern else sp["surface"].count("...") + 1
 
-#    parsed_sentences, _ = parse_sentences(text, engine.nlp)
-    parsed_sentences, _ = engine.parse_sentences(text)    
-    result = extract_spans(
-        parsed_sentences,
-        engine.checker,
-        engine.patterns_by_type,
-        threshold=threshold,
-        return_rejected=with_rejected,
+    def contains(outer: dict, inner: dict) -> bool:
+        return outer["start"] <= inner["start"] and inner["end"] <= outer["end"]
+
+    def strictly_contains(outer: dict, inner: dict) -> bool:
+        return contains(outer, inner) and not contains(inner, outer)
+    
+    def overlaps(a: dict, b: dict) -> bool:
+        return a["start"] < b["end"] and b["start"] < a["end"]
+
+    def priority(sp: dict) -> tuple:
+        return parts(sp), -sp["start"], sp["end"] - sp["start"], sp["probability"]
+
+    def rank(sp: dict) -> tuple:
+        return not sp["is_rejected"], parts(sp), sp["probability"]
+
+    def collapse(items: List[dict], key_fn, rank_fn) -> List[dict]:
+        best = {}
+        for sp in items:
+            key = key_fn(sp)
+            best[key] = max((best[key], sp), key=rank_fn) if key in best else sp
+        return list(best.values())
+
+    def filter_conflicts(items: List[dict], should_drop) -> List[dict]:
+        dropped = {
+            i for i, a in enumerate(items)
+            if any(i != j and should_drop(a, b) for j, b in enumerate(items))
+        }
+        groups = {items[i]["group_id"] for i in dropped if items[i].get("group_id")}
+        return [sp for i, sp in enumerate(items) if i not in dropped and sp.get("group_id") not in groups]
+
+    # 1. Схлопываем дубликаты с одинаковыми границами и surface.
+    candidates = collapse(
+        spans,
+        key_fn=lambda sp: (sp["start"], sp["end"], sp["surface"]),
+        rank_fn=lambda sp: sp["probability"],
     )
-    if with_rejected:
-        kept, rejected = result
-        return dedupe_spans(kept), dedupe_spans(rejected)
-    return dedupe_spans(result)
+
+    # 2а. Конфликты между принятыми составными спанами.
+    candidates = filter_conflicts(
+        candidates,
+        should_drop=lambda a, b: (
+            not a["is_rejected"]
+            and not b["is_rejected"]
+            and parts(a) > 1
+            and parts(b) > 1
+            and contains(b, a)
+            and priority(b) > priority(a)
+        ),
+    )
+
+    # 2б. Конфликты между всеми принятыми спанами.
+    candidates = filter_conflicts(
+        candidates,
+        should_drop=lambda a, b: (
+            not a["is_rejected"]
+            and not b["is_rejected"]
+            and overlaps(a, b)
+            and priority(b) > priority(a)
+        ),
+    )
+
+    # 3а. Принятые спаны (b) убирают вложенные в них отклонённые (a)
+    # и отменяют покрывающие их отклонённые (a).
+    candidates = filter_conflicts(
+        candidates,
+        should_drop=lambda a, b: (
+            a["is_rejected"]
+            and not b["is_rejected"]
+            and (strictly_contains(b, a) or strictly_contains(a, b))
+        ),
+    )
+
+    # 3б. Среди отклонённых более длинные поглощают вложенные короткие.
+    candidates = filter_conflicts(
+        candidates,
+        should_drop=lambda a, b: (
+            a["is_rejected"]
+            and b["is_rejected"]
+            and strictly_contains(b, a)
+            and parts(a) <= parts(b)
+        ),
+    )
+
+    # 4. Финальная схлопка по одинаковым границам.
+    return collapse(
+        candidates,
+        key_fn=lambda sp: (sp["start"], sp["end"]),
+        rank_fn=rank,
+    )
+
+
 
 
 def split_into_thirds(n_sentences: int) -> Tuple[int, int, int]:
@@ -460,9 +745,9 @@ def summarize_linkers(linker_sentence_results: List[list], threshold: float, wor
         kept = []
         for match in sentence:
             if round_half_up(match["probability"]) >= threshold:
-                unique_linkers.add(match["linker"])
+                unique_linkers.add(match["surface"])
                 linker_count += 1
-                kept.append(match["linker"])
+                kept.append(match["surface"])
         linkers_by_appearance.append(kept)
 
     unique_linker_count = len(unique_linkers)
@@ -488,3 +773,4 @@ def summarize_linkers(linker_sentence_results: List[list], threshold: float, wor
         "linkers_per_sentence_middle": _mean_linkers([counts[i] for i in middle]),
         "linkers_per_sentence_end": _mean_linkers([counts[i] for i in end]),
     }
+
