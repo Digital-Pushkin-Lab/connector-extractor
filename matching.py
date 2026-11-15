@@ -6,46 +6,11 @@ non-empty gap between them (e.g. "если ... то"). Ported from the notebooks
 """
 
 from typing import List, Optional, Sequence, Tuple
-
-# Для индексации паттернов
 from collections import defaultdict
-#from bisect import bisect_left
 
+from patterns import Part, Pattern
 from rules import Token, PhraseC
 
-Part = Tuple[str, ...]
-Pattern = Tuple[Part, ...]
-
-
-
-
-_cached_pattern_index = None
-
-def build_pattern_index(patterns):
-    global _cached_pattern_index
-    if _cached_pattern_index is not None:
-        return _cached_pattern_index
-
-    ordered_patterns = sorted(
-        patterns,
-        key=lambda p: (
-            len(p),
-            sum(len(part) for part in p),
-        ),
-        reverse=True,
-    )
-
-    index = defaultdict(list)
-
-    for pattern in ordered_patterns:
-        first_word = pattern[0][0].lower()
-        index[first_word].append(pattern)
-
-    pattern_index = dict(index)
-
-    _cached_pattern_index = pattern_index
-
-    return pattern_index
 
 
 
@@ -109,8 +74,7 @@ def match_pattern(tokens, start: int, pattern: Pattern) -> Optional[List[Tuple[i
     return spans
 
 
-
-def extract_entities_from_sentence(engine, tokens_stanza, patterns: Sequence[Pattern], debug = False) -> List[dict]:
+def extract_entities_from_sentence(engine, tokens_stanza, debug: bool = False) -> List[dict]:
     """Находит все вхождения паттернов из словаря в предложении (включая вложенные)."""
     tokens = []
     for token_stanza in tokens_stanza:
@@ -121,15 +85,15 @@ def extract_entities_from_sentence(engine, tokens_stanza, patterns: Sequence[Pat
         pass
 
     results = []
-    pattern_index = build_pattern_index(patterns)
+
+    pattern_index = engine.patterns.get("linker", {})
 
     for i in range(len(tokens)):
         first_word = tokens[i].s
         candidates = pattern_index.get(first_word, ())
 
         for pattern in candidates:
-
-            # для точки останова. Проверяем сочетание метки debug (которая зависит от предложения) и элемента паттерна, т.е. смотрим в конкретное место двойного цикла
+            # для точки останова
             if debug and pattern[0][0] == 'т.е.':
                 pass
 
@@ -141,10 +105,6 @@ def extract_entities_from_sentence(engine, tokens_stanza, patterns: Sequence[Pat
                 results.append(PhraseC(parts, char_spans, pattern, engine))
 
     return results
-
-
-
-
 
 
 #временно

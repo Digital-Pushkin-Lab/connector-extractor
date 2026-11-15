@@ -7,9 +7,8 @@ Ported from `RuleBasedLinkerChecker` and its `rule_*` functions in
 """
 
 from typing import Callable, Dict, List
-from pipeline import Engine
-
 from pyroaring import BitMap
+from patterns import Pattern
 from pipeline import Engine, load_patterns
 
 class BitFlag:
@@ -47,32 +46,8 @@ class BitFlag:
             instance._bits.discard(self.feature_id)
 
 
-# class TokenFeatures:
-#     """Бинарные признаки токена с доступом через атрибуты."""
-
-#     __slots__ = ("_bits",)
-
-#     # ID признаков должны оставаться постоянными.
-# #    Is_PunctBefore = ЕстьПунктуацияПеред = BitFlag(0)
-#     Is_IntroductoryPotential = ПотенциальноВводное = BitFlag(1)
-#     Is_NoSpaceAfter = НетПробелаПосле = BitFlag(2)
-#     Is_DependentAfter = ЕстьЗависимоеПосле = BitFlag(3)
-#     Is_HeadFollowingNoun = ГлавноеСуществительноеСправа = BitFlag(4)
-
-#     def __init__(self):
-#         self._bits = BitMap()
-
-
 
 class Token:
-    # Известные флаги, пока оставим для истории.
-    # _MISC_FEATURES = {
-    #     "PunctBefore=Yes": "Is_PunctBefore",
-    #     "IntroductoryPotential=Yes": "Is_IntroductoryPotential",
-    #     "SpaceAfter=No": "Is_NoSpaceAfter",
-    #     "DependentAfter=Yes": "Is_DependentAfter",
-    #     "HeadIsFollowingNoun=Yes": "Is_HeadFollowingNoun",
-    # }
 
     def __init__(self, token_stanza, tokens):
         self.st = token_stanza    # Stanza или Stanza Token (для Spacy Token будет sp)
@@ -170,12 +145,16 @@ class Token:
 class Phrase:
     """Универсальный класс для найденной фразы (возможно, разрывной)."""
 
-    def __init__(self, parts, spans, pattern, engine=None):
+    def __init__(self, parts, spans, pattern: Pattern, engine=None):
         self.engine = engine
         self.parts = parts
         self.spans = spans
-        self.pattern = pattern
-        self.surface = "...".join(" ".join(part) for part in pattern)
+        self.pattern: Pattern = pattern
+        self.surface = (
+            pattern.surface
+            if isinstance(pattern, Pattern)
+            else "...".join(" ".join(part) for part in pattern)
+        )
         self.words = [word for part in parts for word in part]  # токены фразы
         self.sent_tokens = self.words[0].tokens if self.words else []  # токены предложения
         self.verbose = False # для отладки. Если установить флаг, то в правилах выведется большое отладочное сообщение
@@ -185,7 +164,6 @@ class Phrase:
 
         # Хук для вычисления признаков в классах-наследниках
         self._calc_features()
-
     def _calc_features(self):
         """Переопределяется в наследниках для вычисления предметных признаков."""
         pass
@@ -317,7 +295,7 @@ class PhraseC(Phrase):
         last_info = f", last={self.last.s!r}" if not self.Len1 and self.last else ""
 
         print(
-            f"DEBUG {label}: surface={self.surface!r}, Len1={self.Len1}{last_info}, "
+            f"DEBUG {label}: surface={self.surface!r}, "
             f"upos={self.first.upos}, deprel={self.first.deprel}, head={head_info}, "
             f"init={self.SentenceInitial}, bits={sorted(self._bits)} | "
             f"sent={tokens2text(self.sent_tokens)}"
@@ -337,8 +315,8 @@ class PhraseC(Phrase):
         # КонечнаяПозиция
         self.EndPosition = not self.next
 
-        # НачалоПредложения (Проверяем id. Теоретически поток токенов может содержать несколько предложений с точки зрения Stanza, хотя мы по предложениям токены делим)
-        self.SentenceInitial = (bool(first) and first.id == 1)
+        # НачалоПредложения (Проверяем id. Ппоток токенов может содержать несколько предложений с точки зрения Stanza, поэтому смотрм id, а не индекс токена в списке)
+        self.SentenceInitial = first.id == 1 # Смотрим id первого токена фразы. first и last - всегда существуют, если существует words, а это мы проверили.
 
         # Вводная конструкция
         self.Parataxis = any(w["deprel"] == "parataxis" for w in self.words)
@@ -412,7 +390,7 @@ class PhraseC(Phrase):
 
             curr = curr.next
 
-        self.LastHeadAfter = bool(last) and bool(last.id) and bool(last.head_id) and last.head_id > last.id
+        self.LastHeadAfter = bool(last.id) and bool(last.head_id) and last.head_id > last.id
 
         # ПРИЗНАКИ ПРАВИЛ, КОТОРЫЕ НЕ ИСПОЛЬЗУЮТСЯ
         # СвязьВКаждойЧасти
@@ -436,7 +414,7 @@ class PhraseC(Phrase):
         self.Next_By = bool(self.next) and self.next.s == "бы"
 
         # Вершина первого токена — инфинитив (характерно для вопросительных/инфинитивных оборотов: «как закупать», «что делать»)
-        self.HeadIsInf = bool(first) and bool(first.head) and "VerbForm=Inf" in first.head.feats
+        self.HeadIsInf = bool(first.head) and "VerbForm=Inf" in first.head.feats
 
         # Изъяснительное придаточное (ccomp) при глаголах восприятия, знания и речи («видели, как она летала»)
         speech_perception_lemmas = {
@@ -454,7 +432,7 @@ class PhraseC(Phrase):
         )
 
         # Союзное слово в роли подлежащего (PRON + nsubj — характерно для присоединительного «..., что привело к...»)
-        self.RelativeSubject = bool(first) and first.upos == "PRON" and first.deprel == "nsubj"
+        self.RelativeSubject = first.upos == "PRON" and first.deprel == "nsubj"
 
         # Наличие соотносительного слова (коррелята) слева перед знаками препинания («всё, что», «с тем, что», «тех, что»)
         correlative_lemmas = {"всё", "все", "тот", "то", "такой", "один"}
@@ -464,9 +442,9 @@ class PhraseC(Phrase):
         self.CorrelativeBefore = bool(prev_word) and prev_word.lemma in correlative_lemmas        
 
          # Признаки сочинительных союзов (морфология и синтаксическая связь первого токена)
-        self.FirstCconj = bool(first) and first.upos == "CCONJ"
-        self.FirstConjISignal = bool(first) and first.deprel in {"cc", "fixed"}
-        self.FirstConjIliSignal = bool(first) and first.deprel in {"cc", "discourse", "fixed"}
+        self.FirstCconj =  first.upos == "CCONJ"
+        self.FirstConjISignal = first.deprel in {"cc", "fixed"}
+        self.FirstConjIliSignal = first.deprel in {"cc", "discourse", "fixed"}
 
         first_head = first.head if first else None
 
@@ -719,13 +697,26 @@ def rule_special(phrase:PhraseC):
                         
     return 0
 
-def rule_time_connector(phrase:Phrase):
+
+def rule_time_connector(phrase:PhraseC):
     """Единое правило валидации синтаксического контекста для временных 
     дейктических слов (тогда, теперь, сейчас, впоследствии, ныне, затем и др.)
     """
     words = phrase.words
     if not words:
         return 0
+
+    # Проверяем, что у паттерна есть признак времени (в semfield1 или semfield2)
+    # Признаки паттернов задаются учёными и иногда меняются. Это и плюс, и минус данных признаков.
+    # Поэтому, с такими признаками нужно аккуратно работать, они могут измениться и сильно повлиять на правило.
+    # Конкретно в этом случае признак является фактически оптимизирующим, т.к. ниже мы всё равно ищем 
+    # конкретные слова внутри паттерна, поэтому в данном случае проверку признака можно отключить
+
+    if not phrase.pattern.Time:  # или phrase.pattern.Время - можем задать на русском языке
+        return 0
+    
+    # для отладки. Можно вывести все фразы, а можно наложить дополнительный отбор
+    #phrase.print_debug(verbose=False)  # выводим фразу и её признаки в терминал. verbose - это флаг вывода итоговых результатов по фразе, его мы отключим
 
 
     # 1. Находим конкретный токен дейктика внутри списка слов спана
@@ -737,20 +728,17 @@ def rule_time_connector(phrase:Phrase):
     if not word:
         return 0
 
-    # if phrase.sent_tokens[0].text == "Если": # первый токен предложения
-    #     print(tokens2text(phrase.sent_tokens))
-    #     pass    
 
     # 2. Безусловный бонус для известных устойчивых сочетаний
     if phrase.surface in {"тогда же", "теперь же", "сейчас же", "сразу же"}:
         return +1
 
-    # ПРИОРИТЕТНЫЙ БЛОК: ЖЕЛЕЗНЫЕ ПРИЗНАКИ НАЧАЛА (Решает books388)
+    # ЖЕЛЕЗНЫЕ ПРИЗНАКИ НАЧАЛА (Решает books 388)
     if phrase.SentenceInitial:
         return +2
 
-    # --- СИНТАКСИЧЕСКИЙ АНАЛИЗ КОНТЕКСТА ---
-    
+    # СИНТАКСИЧЕСКИЙ АНАЛИЗ КОНТЕКСТА
+       
     # Если перед дейктиком стоит частица "то" (например, "если... то тогда")
     if word.prev and word.prev.lemma == "то":
         return +2
@@ -760,7 +748,7 @@ def rule_time_connector(phrase:Phrase):
         return -3
 
     # Анализ знаков препинания слева от фразы (Бессоюзное сложное предложение / Границы)
-    # books413
+    # books 413
     if phrase.BspSignalBefore:
         return +2  # Начало новой части в БСП
 
@@ -783,16 +771,16 @@ def rule_complex(phrase: PhraseC) -> int:
         return 0
 
     # 1. Ложные разрывные паттерны вроде «что...что», «что...то», «что...если»,
-    # когда первое «что» — обычный изъяснительный союз (примеры 24, 61, 81, 278, 441).
+    # когда первое «что» — обычный изъяснительный союз (примеры books 24, 61, 81, 278, 441).
     if first.s == "что" and first.upos == "SCONJ":
         return -3
 
     # 2. Случайные склейки союза «и» с частицей «только» или наречием «так»
-    # через полпредложения (примеры 99, 206, 307, 309).
+    # через полпредложения (примеры books 99, 206, 307, 309).
     if phrase.surface in {"и...только", "и...так"}:
         return -3
 
-    # 3. Защита союза «то есть» (пример 382):
+    # 3. Защита союза «то есть» (пример books 382):
     # если начало или конец разрывного паттерна попадает на слово «то» внутри союза «то есть».
     if (last.s == "то" and last.next and last.next.s == "есть") or (
         first.s == "то" and first.next and first.next.s == "есть"
@@ -800,7 +788,7 @@ def rule_complex(phrase: PhraseC) -> int:
         return -3
 
     # 4. Наречие «так» в конструкции «так, чтобы» / «так, что» не должно становиться частью
-    # разрывного коннектора (пример 485: «Если ... изображать фигуры так, чтобы ..., то ...»).
+    # разрывного коннектора (пример books 485: «Если ... изображать фигуры так, чтобы ..., то ...»).
     for part in phrase.parts:
         if len(part) == 1 and part[0].s == "так":
             next_word = part[0].next
@@ -810,7 +798,7 @@ def rule_complex(phrase: PhraseC) -> int:
                 return -3
 
     # 5. Ложные парные склейки с ограничительной частицей «только» (без «не» перед ней)
-    # или со сравнительной степенью наречия («чем...лучше» — примеры 38, 205).
+    # или со сравнительной степенью наречия («чем...лучше» — примеры books 38, 205).
     if phrase.surface == "только...а":
         if not (first.prev and first.prev.s == "не"):
             return -3

@@ -25,7 +25,7 @@ evaluate.py — оценка экстрактора коннекторов на 
   строки, где text начинается с "!" или "#" — комментарии, пропускаются.
 
 Запуск:
-  python evaluate.py                         # src/benchmark3_all_linkers.xlsx
+  python evaluate.py                         # src/first_benchmark.xlsx
   python evaluate.py --benchmark src/benchmark.tsv --threshold 0.4
   python evaluate.py --status ERR --limit 100 --report src/debug.txt
 """
@@ -260,9 +260,9 @@ def add_evaluation_columns(df: pd.DataFrame, engine:Engine) -> pd.DataFrame:
 
     for clean, ref_ents in prepared_rows:
 
-        # Для отладки.
-        if "Годунову донесли," in clean:
-            pass
+        # # Для отладки.
+        # if "Годунову донесли," in clean:
+        #     pass
 
         marked_text, _, spans=  engine.mark_text(clean)
 
@@ -469,40 +469,33 @@ def main() -> pd.DataFrame:
     args = parser.parse_args()
 
     print("Loading stanza pipeline (tokenize,pos,lemma,depparse)...", file=sys.stderr)
-    engine = build_engine(threshold=args.threshold)  #threshold теперь убрали в engine для простоты вызовов, но мы им можем управлять
+    engine = build_engine(threshold=args.threshold)  #threshold теперь убрали в engine для простоты вызовов, но мы можем им там управлять
 
-    # #AS2 Просто для ускорения отладки
+    # Таким образом мы отрабатываем два файла с обзим логом ошибок и общими метриками (можно передать спском, а можно через пробел)
+    # Удобно задавать здесь с точки зрения отладки, при необходимости, закомментируйте эту строчку
     args.benchmark = "src/first_benchmark.xlsx src/books500.xlsx"
-#    args.benchmark = "src/books500.xlsx"
-#    args.benchmark = "src/wiki.tsv"
-    # #AS2
 
 
+    
     # данная функция отрабатывает бенчмарк и выводит все результаты в лог в файл, если в параметрах скрипта не сказано другого
     df = process_benchmark(args.benchmark, engine, show_max=args.limit, report_path=args.report, status=args.status)
     
-    # а это блок функций, которые по готовому датасету выводят дополнительные отчёты в терминал для отладки. Тут в файл ничего не пишется, так как имя файла не передаётся
-    debug_report(df, file_name="src/debug_err.txt", show_max=10, status="ERR") 
-#    debug_report(df, patterns=["видно"]) 
+    #ДОПОЛНИТЕЛЬНЫЕ ОТЧЁТЫ ПО ЛОГУ:
+    
+    debug_report(df, file_name="src/debug_err.txt", status="ERR")  # так мы выводим только ошибки в терминал и в файл
+#    debug_report(df, patterns=["видно"])  # так мы выводим примеры с отбором по паттерну "видно" (подстрока поиска выровнена по границам паттеран)
+#    debug_report(df, fragments=["и т.д.", "и дело", "или иной"])   #так мы выводим примеры, у которых в исходном предложении есть такие подстроки
+#    debug_report(df, file_name="src/debug_что.txt", patterns=["что"])   # здесь мы выводим все случаи с паттерном "что" на экран и в файл src/debug_что.txt
 
-#    debug_report(df, fragments=["и т.д.", "и дело", "или иной"])   
-#    debug_report(df, file_name="src/debug_что.txt", n=100, patterns=["что"])   
-
+# Ещё примеры отбора лога:
 #    debug_report(df, patterns=["якобы"])   # Проверить этот пример
-
 #    debug_report(df, fragments=["в том числе"])   # проверить примеры
-
-#    debug_report(df, fragments=["лучше"])   
-#    debug_report(df, fragments=["то есть"])   
 #    debug_report(df, fragments=["в том же"])     # тут надо разбираться Пример books326 
 #    debug_report(df, fragments=["тут же"])     # тут надо разбираться Пример books360 
-    #debug_report(df, fragments=["тогда", "теперь"])    # тут написано отдельное общее правило
-#    debug_report(df, fragments=["ещё", "еще", "прежде всего"])    
+#    debug_report(df, fragments=["тогда", "теперь"])    # тут написано отдельное общее правило
 #    debug_report(df, fragments=["наряду с"])    # тут вопрос, надо разбираться со случаями
 #    debug_report(df, fragments=["благодаря"])    # тут нужно поверять дательный падеж после, но нужны контрпримеры
-#    debug_report(df, fragments=["затем"])    
-#    debug_report(df, fragments=["дело в том"])    
-#    debug_report(df, status="ERR", fragments=["при этом", "в результате"])
+#    debug_report(df, fragments=["при этом", "в результате", "в итоге"])
 
     return df
 

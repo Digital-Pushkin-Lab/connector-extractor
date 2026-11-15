@@ -16,9 +16,9 @@ import re
 import uuid
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import List, NamedTuple, Sequence, Tuple, Dict, Iterable
+from typing import List, Sequence, Tuple, Dict, Iterable
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from tqdm.auto import tqdm
 
 from razdel import sentenize
@@ -74,15 +74,18 @@ class Engine:
     def __init__(
         self,
         nlp: object = None,
-        patterns_by_type: dict = {},
+        patterns_by_type: dict = None,
         threshold=DEFAULT_THRESHOLD,        
     ) -> None:
         self.nlp = self.build_nlp(nlp)
-        self.patterns_by_type = (
-            patterns_by_type
-            if patterns_by_type is not None
-            else load_patterns()
-        )
+
+        self.patterns_by_type = patterns_by_type if patterns_by_type is not None else load_patterns()
+        # Индекс паттернов по типам и первому слову: {type_name: {first_word: [Pattern, ...]}}
+        self.patterns: Dict[str, Dict[str, List[Pattern]]] = {
+            type_name: self._build_pattern_index(patterns)
+            for type_name, patterns in self.patterns_by_type.items()
+        }
+        
         self.threshold = threshold if threshold is not None else DEFAULT_THRESHOLD
 
 
@@ -91,12 +94,46 @@ class Engine:
         # Кэш-индекс по словам: слово -> список (выражение, позиция_слова_в_выражении)
         self.sets_by_word: Dict[str, List[Tuple[Tuple[str, ...], int]]] = defaultdict(list)
 
-
         # Кэш разметки Stanza
         self._sentence_cache: Dict[str, object] = {}
 
         self.load_sets()
-        pass
+
+    @staticmethod
+    def _build_pattern_index(patterns: Iterable[Pattern]) -> Dict[str, List[Pattern]]:
+        """Строит индекс паттернов по первому слову (отсортированный по убыванию длины)."""
+        ordered_patterns = sorted(
+            patterns,
+            key=lambda p: (
+                len(p),
+                sum(len(part) for part in p),
+            ),
+            reverse=True,
+        )
+
+        index: Dict[str, List[Pattern]] = defaultdict(list)
+        for pattern in ordered_patterns:
+            first_word = pattern[0][0].lower()
+            index[first_word].append(pattern)
+
+        return dict(index)
+    
+
+
+    def get_pattern_index(self, patterns=None) -> dict:
+        """Возвращает индекс паттернов по первому слову, кэшируя его внутри Engine."""
+        from matching import build_pattern_index
+
+        if patterns is None:
+            patterns = self.patterns_by_type.get("linker", ())
+
+        cache_key = id(patterns)
+        if cache_key not in self._pattern_indices:
+            self._pattern_indices[cache_key] = build_pattern_index(patterns)
+
+        return self._pattern_indices[cache_key]
+
+
 
     def build_nlp(self, nlp=None):
         """Construct the stanza pipeline. Downloads the stanza `ru` model on
@@ -286,7 +323,7 @@ class Engine:
 
         return {
             "sentence": sentence,
-            "entities": extract_entities_from_sentence(self, tokens, patterns, debug),
+            "entities": extract_entities_from_sentence(self, tokens, debug),
         }
 
     def clear_parse_cache(self) -> None:
