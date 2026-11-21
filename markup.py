@@ -22,26 +22,33 @@ markup.py
 Модуль исходно был создан по аналогии с gradio_app.py, так как тоже запускает разметку из ядра программы, а потом её интерпретирует.
 """
 
-import os, sys, re
+import sys, re, csv
 import pandas as pd
 from pathlib import Path
 
 from rules import in_triggers
 
-from typing import List, Dict, Tuple
+from typing import List, Tuple, Dict, Any
 
-# ---------------------------------------------------------------------------
-# Пути к extractor (точно как в gradio_app.py)
-# ---------------------------------------------------------------------------
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ""))
+
+import pandas as pd
+from nltk.tokenize import sent_tokenize
+import string
+
 
 import stanza
-from pipeline import extract_spans, build_engine
-
-LINKERS_CSV = os.path.join(os.path.dirname(__file__),  "data", "linkers.tsv")
+from rules import build_engine
 
 
-print("Loading stanza pipeline (tokenize,pos,lemma,depparse)...", file=sys.stderr)
+# увеличиваем объём этих слов в два раза. Причина - это сложные и частые (нужные) слова и фразы.
+FOCUS_ON="""
+# временнЫе дейктические слова:
+тогда, теперь, сейчас, впоследствии # сейчас и впоследствии вообще пока не входят в список линкеров
+когда, чем, что, же # эти сова точно нужны
+именно, как, или, либо
+видно, правда # слова со сложной омонимией в наших датасетах
+"""
+
 
 def get_stanza():
     try:
@@ -57,160 +64,11 @@ def get_stanza():
         else:
             raise
 
-# NLP = get_stanza()
 
-# #NLP = stanza.Pipeline("ru", processors="tokenize,pos,lemma,depparse")
-
-
-# CHECKER = build_default_checker()
-# PATTERNS_BY_TYPE = load_patterns(LINKERS_CSV)
-
-ENGINE = build_engine(LINKERS_CSV)
-
-# БЛОК РАЗМЕТКИ. СДЕЛАНО ПО АНАЛОГИИ С gradio_app.py 
-
-def dedupe_spans(spans: List[dict]) -> List[dict]:
-    """Оставляет только лучший (по probability) span при полном совпадении границ."""
-    best: Dict[Tuple[int, int], dict] = {}
-    order: List[Tuple[int, int]] = []
-    for sp in spans:
-        pos = (sp["start"], sp["end"])
-        if pos not in best:
-            best[pos] = sp
-            order.append(pos)
-        elif sp["probability"] > best[pos]["probability"]:
-            best[pos] = sp
-    return [best[pos] for pos in order]
-
-from collections import defaultdict #для сортирвоки
+ENGINE = build_engine()
 
 
-def mark_text(text: str) -> Tuple[str, List[dict]]:
-    """
-    Размечает предложение и возвращает кортеж:
-    - размеченное предложение
-    - список найденных паттернов
-
-    В список паттернов входят как принятые, так и отклонённые span'ы.
-    """
-    if not text or not text.strip():
-        return text, []
-
-    parsed_sentences, _ = ENGINE.parse_sentences(text)
-
-    spans, rejected = extract_spans(
-        parsed_sentences,
-        ENGINE.checker,
-        ENGINE.patterns_by_type,
-        return_rejected=True
-    )
-
-    spans = dedupe_spans(spans)
-    rejected = dedupe_spans(rejected)
-
-
-    patterns = []
-
-    # принятые паттерны
-    seen_composite = set()
-
-    for sp in spans:
-        surface = sp["surface"]
-        pattern_type = sp["type"]
-
-        if "..." in surface:
-            key = (surface, pattern_type)
-
-            # составной паттерн добавляем только один раз
-            if key in seen_composite:
-                continue
-
-            seen_composite.add(key)
-
-        patterns.append({
-            "surface": surface,
-            "type": pattern_type,
-            "start": sp["start"],
-            "end": sp["end"],
-            "accepted": True,
-        })
-
-    # отклонённые паттерны тоже считаем паттернами
-    for sp in rejected:
-        patterns.append({
-            "surface": sp["surface"],
-            "type": sp.get("type", "other"),
-            "start": sp["start"],
-            "end": sp["end"],
-            "accepted": False,
-        })
-
-    # сортируем паттерны по их позиции в исходном тексте
-    patterns.sort(key=lambda p: (p["start"], p["end"]))
-
-    if not spans and not rejected:
-        return text, patterns
-
-    events = []
-
-    # Разделяем на обычные и составные (по наличию "..." в surface)
-    continuous = []
-    groups = defaultdict(list)
-
-    for sp in spans:
-        if "..." in sp["surface"]:
-            key = (sp["surface"], sp["type"])
-            groups[key].append(sp)
-        else:
-            continuous.append(sp)
-
-    # 1. Обычные (односоставные) — всегда без нуля
-    for sp in continuous:
-        cat = sp["type"]
-        events.append((sp["start"], True, sp["end"], cat))
-        events.append((sp["end"], False, sp["start"], cat))
-
-    # 2. Составные — части нумеруются с 1
-    for key, group in groups.items():
-        group_sorted = sorted(group, key=lambda x: x["start"])
-
-        for i, sp in enumerate(group_sorted):
-            cat = f"{sp['type']}{i + 1}"
-            events.append((sp["start"], True, sp["end"], cat))
-            events.append((sp["end"], False, sp["start"], cat))
-
-    # 3. Отклонённые
-    for sp in rejected:
-        events.append((sp["start"], True, sp["end"], "other"))
-        events.append((sp["end"], False, sp["start"], "other"))
-
-    # Сортировка событий
-    events.sort(
-        key=lambda ev: (ev[0], 0 if not ev[1] else 1, -ev[2])
-    )
-
-    # Сборка размеченного текста
-    parts = []
-    pos = 0
-
-    for idx, is_open, other, cat in events:
-        parts.append(text[pos:idx])
-
-        if is_open:
-            parts.append("[")
-        else:
-            parts.append(f"]={cat}")
-
-        pos = idx
-
-    parts.append(text[pos:])
-    marked_line = "".join(parts)
-
-    return marked_line, patterns
-
-
-
-
+# Функция создаёт датасет "старого типа". Пишет файл с разметкой. Используется для разметки датасета books
 def make_old_dataset(input_file_name: str, output_file_name: str) -> None:
     """Читает файл → размечает → сохраняет."""
     with open(input_file_name, "r", encoding="utf-8") as f:
@@ -234,7 +92,7 @@ def make_old_dataset(input_file_name: str, output_file_name: str) -> None:
 
     for line in lines:
 
-        marked_line = mark_text(line)[0]
+        marked_line = ENGINE.mark_text(line)[0]
 
 
         cleaned = marked_line.lower().replace('[и]', '').replace('[а]', '').replace('[но]', '') #уберём банальное из проверки
@@ -255,9 +113,8 @@ def make_old_dataset(input_file_name: str, output_file_name: str) -> None:
     print(f"Готово: {output_file_name}", file=sys.stderr)
 
 
-import csv
 
-# функция использовалася джля конвертации линкеров из csv в tsv
+# функция использовалась для конвертации линкеров из csv в tsv
 def csv2tsv(input_path: str = "data/linkers.csv", output_path: str = "data/linkers.tsv") -> None:
     """Читает CSV-файл и сохраняет его в формат TSV."""
     with open(input_path, mode="r", encoding="utf-8") as infile, \
@@ -271,15 +128,6 @@ def csv2tsv(input_path: str = "data/linkers.csv", output_path: str = "data/linke
 
 ### НОВАЯ РАЗМЕТКА #####
 
-
-import re
-import sys
-from pathlib import Path
-from typing import List, Tuple, Dict, Any
-
-import pandas as pd
-from nltk.tokenize import sent_tokenize
-import string
 
 class NewDataset:
     DATASET_COLUMNS = [
@@ -295,9 +143,6 @@ class NewDataset:
     # эти символы мы вырезаем перед проверкой похожести предложений
     PUNCTUATION_AND_SYMBOLS = string.punctuation + "«»“”„…—–−·•◦▪▫●○◆◇■□★☆➤➤➔→←↑↓"
 
-    # MARKUP_RE = re.compile(
-    #     r"\[[^\]]*\](?:=+[A-Za-zА-Яа-я0-9_]+)*"
-    # )
     MARKUP_RE = re.compile(
         r"\[([^\]]*)\](?:=+[A-Za-zА-Яа-я0-9_]+)*"
     )
@@ -353,12 +198,7 @@ class NewDataset:
             if "comment50" not in df.columns:
                 df["comment50"] = ""
 
-            df["comment50"] = (
-                df["comment50"]
-                .fillna("")
-                .astype(str)
-                .str.slice(0, 50)
-            )
+            df["comment50"] = df["comment50"].fillna("").astype(str).str.slice(0, 50)
 
             print(
                 f"Датасет загружен: {self.dataset_path}, строк: {len(df)}",
@@ -379,13 +219,10 @@ class NewDataset:
             if not text or text.startswith("#") or text.startswith("!"):
                 continue
 
-            main_pattern, pattern_type = (
-                self.parse_main_pattern_from_text(text)
-            )
+            main_pattern, pattern_type = self.parse_main_pattern_from_text(text)
 
             df.at[idx, "main_pattern"] = main_pattern
             df.at[idx, "type"] = pattern_type
-
 
 
         return df[self.WORK_COLUMNS]
@@ -893,10 +730,7 @@ class NewDataset:
                 if remaining <= 0:
                     break
                 
-                (
-                    marked_line,
-                    patterns
-                ) = mark_text(sentence)
+                marked_line, patterns, _ = ENGINE.mark_text(sentence)
 
 
 
@@ -918,14 +752,8 @@ class NewDataset:
                 current_pattern_count = pattern_counts.get(pattern_key, 0)
                 current_type_count = pattern_type_counts.get(pattern_type_key, 0)
 
-
-                # увеличиваем объём этих слов в два раза. Причина - это сложные и частые (нужные) слова и фразы. (in_triggers - функция модуля rules)
-                triggers="""
-                # временнЫе дейктические слова:
-                тогда, теперь, сейчас, впоследствии # сейчас и впоследствии вообще пока не входят в список линкеров
-                когда, чем, что, же # эти сова точно нужны
-                """
-                k = 2 if in_triggers(pattern_surface, triggers) else 1
+                #увеличиваем в 2 раза слова из строки FOCUS_ON, объявленной в начале файла(in_triggers - функция модуля rules)
+                k = 2 if in_triggers(pattern_surface, FOCUS_ON) else 1
 
 
                 # Примеров одного вида не должно быть слишком много
@@ -999,7 +827,7 @@ def main():
     dataset = NewDataset("src/wiki.tsv")
 
     dataset.make_new_dataset(source_dir + "Категория_Астрономия", max_num=300 )
-    dataset.make_new_dataset(source_dir + "Категория_Архитектура", max_num=950 )
+#    dataset.make_new_dataset(source_dir + "Категория_Архитектура", max_num=985 )
 
 
     dataset.save()
