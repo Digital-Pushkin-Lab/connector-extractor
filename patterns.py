@@ -10,6 +10,10 @@ import pandas as pd
 Part = Tuple[str, ...]
 
 
+def normalize_yo(text: str) -> str:
+    return text.replace("ё", "е").replace("Ё", "Е")
+
+
 class FeatureVocab:
     """Словарь признаков со стабильной нумерацией битов (0, 1, 2, ...)."""
 
@@ -131,7 +135,10 @@ class Pattern(Sequence):
         semfield2: int = 0,
         pragmatics: int = 0,
     ):
-        normalized = tuple(tuple(p) for p in parts)
+        normalized = tuple(
+            tuple(normalize_yo(word).lower() for word in p)
+            for p in parts
+        )
         if not surface:
             surface = " ... ".join(" ".join(part) for part in normalized)
 

@@ -23,7 +23,7 @@ from tqdm.auto import tqdm
 
 from razdel import sentenize
 
-from patterns import build_patterns_from_csv, expand_expressions
+from patterns import build_patterns_from_csv, expand_expressions, normalize_yo
 
 from collections import defaultdict #для сортирвоки
 import csv
@@ -176,7 +176,7 @@ class Engine:
                 # expand_expressions - функция из модуля patterns, "разворачивает" выражение
                 for expr in expand_expressions(row[0]):  
 
-                    tokens = tuple(expr.split())
+                    tokens = tuple(normalize_yo(word) for word in expr.split())
                     self.sets.append(tokens)
                     for idx, word in enumerate(tokens):
                         self.sets_by_word[word].append((tokens, idx))

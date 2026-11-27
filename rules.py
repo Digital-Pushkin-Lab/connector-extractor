@@ -8,7 +8,7 @@ Ported from `RuleBasedLinkerChecker` and its `rule_*` functions in
 
 from typing import Callable, Dict, List
 from pyroaring import BitMap
-from patterns import Pattern
+from patterns import Pattern, normalize_yo
 from pipeline import Engine, load_patterns
 
 class BitFlag:
@@ -55,7 +55,7 @@ class Token:
         self.info =st_dict[0]   # Первое слово из токена Stanza превращённого в словарь. Для доступа к инфорамции Stanaza через интерфейс словаря
 
         self.text = token_stanza.text
-        self.s = self.text.lower()   #часто нужно в нижем регистре, возможно тут требуется дополнительно отчистить от, например, знаков ударения
+        self.s = normalize_yo(self.text.lower())   #часто нужно в нижем регистре, возможно тут требуется дополнительно отчистить от, например, знаков ударения
         self.tokens = tokens         # ключевой момент. Токены исходного предложения с типом Token
 
 
@@ -78,7 +78,8 @@ class Token:
 
     @property
     def lemma(self):
-        return self.st.words[0].lemma if self.st.words else None
+        lemma = self.st.words[0].lemma if self.st.words else None
+        return normalize_yo(lemma) if lemma else lemma
 
     @property
     def upos(self):
@@ -195,6 +196,7 @@ class Phrase:
         Возвращает: Объект Token или None.
         """
         lemmas = {lemmas} if isinstance(lemmas, str) else set(lemmas)
+        lemmas = {normalize_yo(lemma) for lemma in lemmas}
         return next((w for w in self.words if w.lemma in lemmas), None)
 
     def get(self, key, default=None):
@@ -527,12 +529,12 @@ def in_triggers(words, triggers):
     Триггеры разделяются переводами строк или запятыми.
     Всё после # до конца строки считается комментарием.
     """
-    if isinstance(words, str):    
+    if isinstance(words, str):
         words = tuple(words.split())
 
-
+    words = tuple(normalize_yo(word) for word in words)
     triggers_set = {
-        tuple(trigger.split())
+        tuple(normalize_yo(trigger).split())
         for line in triggers.splitlines()
         for trigger in line.split("#", 1)[0].split(",")
         if trigger.strip()
@@ -910,7 +912,7 @@ def rule_adverb(phrase: PhraseC) -> int:
     # Исключаем временные и дискурсивные наречия-коннекторы, которые могут стоять перед сказуемым/деепричастием
     time_and_discourse_adverbs = {
         "затем", "тогда", "теперь", "потом", "впоследствии", "впредь",
-        "далее", "едва", "однако", "впрочем", "также", "притом", "причём",
+        "далее", "едва", "однако", "впрочем", "также", "притом", "причем",
     }
     if word.lemma in time_and_discourse_adverbs:
         return 0
